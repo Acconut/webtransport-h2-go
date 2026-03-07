@@ -16,10 +16,18 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"os"
+	"strings"
 	"time"
+
+	"golang.org/x/net/http2"
 )
 
 func main() {
+	if !strings.Contains(os.Getenv("GODEBUG"), "http2xconnect=1") {
+		log.Fatal("GODEBUG must contain http2xconnect=1 for this example to work")
+	}
+
 	cert, clientRoots, err := generateSelfSignedCert()
 	if err != nil {
 		log.Fatal(err)
@@ -31,12 +39,13 @@ func main() {
 			NextProtos:   []string{"h2"},
 		},
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Proto != "HTTP/2.0" {
-				http.Error(w, fmt.Sprintf("expected HTTP/2, got %q", r.Proto), http.StatusHTTPVersionNotSupported)
+			isExtendedConnect := r.Method == "CONNECT" && r.Proto == "HTTP/2.0" && r.Header.Get(":protocol") == "webtransport"
+			if !isExtendedConnect {
+				http.Error(w, "expected WebTransport over HTTP/2", http.StatusBadRequest)
 				return
 			}
 			w.Header().Set("Content-Type", "text/plain")
-			fmt.Fprintf(w, "OK: %s %s over %s\n", r.Method, r.URL.Path, r.Proto)
+			fmt.Fprintf(w, "OK: WebTransport over HTTP/2\n")
 		}),
 	}
 
@@ -55,14 +64,18 @@ func main() {
 
 	addr := listener.Addr().String()
 
-	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.TLSClientConfig = &tls.Config{
-		RootCAs: clientRoots,
+	t := http2.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: clientRoots},
 	}
-	client := &http.Client{Transport: t}
-	resp, err := client.Get(fmt.Sprintf("https://%s/test", addr))
+	req, err := http.NewRequest("CONNECT", fmt.Sprintf("https://%s/test", addr), nil)
+	req.Header.Set(":protocol", "webtransport")
+	fmt.Println("req", req.Header)
 	if err != nil {
 		log.Fatal(err)
+	}
+	resp, err := t.RoundTrip(req)
+	if err != nil {
+		log.Fatalf("round trip failed: %v", err)
 	}
 	defer resp.Body.Close()
 

@@ -1,3 +1,5 @@
+github.com/shogo82148/go-sfv v0.3.3 h1:N8AhD+fwmGGNXPP3KPWrnMQE59IIEuF/yAjgI8caeQM=
+github.com/shogo82148/go-sfv v0.3.3/go.mod h1:VYNXeh/Gj0TO5PR+K7ZNTRnxKe233q6kYU/qIL0s6s4=
 golang.org/x/net v0.51.0 h1:94R/GTO7mt3/4wIKpcR5gkGmRLOuE/2hNGeWq/GBIFo=
 golang.org/x/net v0.51.0/go.mod h1:aamm+2QF5ogm02fjy5Bb7CQ0WMt1/WVM7FtyaTLlA9Y=
 golang.org/x/text v0.34.0 h1:oL/Qq0Kdaqxa1KbNeMKwQq0reLCCaFtqu2eNuSeNHbk=

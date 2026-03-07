@@ -1,0 +1,69 @@
+package wth2
+
+import (
+	"fmt"
+	"net/http"
+
+	"github.com/shogo82148/go-sfv"
+)
+
+type Client struct {
+	RoundTripper http.RoundTripper
+}
+
+func NewRequest(url string, availableProtocols []string) (*http.Request, error) {
+	req, err := http.NewRequest("CONNECT", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set(":protocol", "webtransport")
+
+	if len(availableProtocols) > 0 {
+		encodedAvailableProtocols, err := encodeAvailableProtocolsHeader(availableProtocols)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("WT-Available-Protocols", encodedAvailableProtocols)
+	}
+
+	return req, nil
+}
+
+func encodeAvailableProtocolsHeader(availableProtocols []string) (string, error) {
+	items := make([]sfv.Item, len(availableProtocols))
+	for i, protocol := range availableProtocols {
+		items[i] = sfv.Item{Value: protocol}
+	}
+	return sfv.EncodeList(items)
+}
+
+func (c *Client) Connect(req *http.Request) (interface{}, error) {
+	res, err := c.RoundTripper.RoundTrip(req)
+	if err != nil {
+		return nil, fmt.Errorf("webtransport connection failed: %w", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return nil, fmt.Errorf("webtransport connection failed: %d %s", res.StatusCode, res.Status)
+	}
+
+	protocol, err := parseSelectedProtocolHeader(res.Header.Values("WT-Protocol"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid WT-Protocol header: %w", err)
+	}
+
+	return protocol, nil
+}
+
+func parseSelectedProtocolHeader(h []string) (string, error) {
+	item, err := sfv.DecodeItem(h)
+	if err != nil {
+		return "", fmt.Errorf("invalid WT-Protocol header: %w", err)
+	}
+	protocol, ok := item.Value.(string)
+	if !ok {
+		return "", fmt.Errorf("invalid WT-Protocol header: expected string item, got %v", item.Value)
+	}
+	return protocol, nil
+}

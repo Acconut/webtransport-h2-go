@@ -1,5 +1,3 @@
-// Simple HTTP/2 example: starts an HTTP/2 server and sends a request to it from the same process.
-// The server validates that the request used HTTP/2.
 package main
 
 import (
@@ -11,7 +9,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"log"
 	"math/big"
 	"net"
@@ -21,6 +18,8 @@ import (
 	"time"
 
 	"golang.org/x/net/http2"
+
+	wth2 "github.com/Acconut/webtransport-h2-go"
 )
 
 func main() {
@@ -33,17 +32,24 @@ func main() {
 		log.Fatal(err)
 	}
 
+	wtServer := &wth2.Server{
+		SelectProtocol: func(r *http.Request, availableProtocols []string) (string, error) {
+			return "baton", nil
+		},
+	}
+
 	server := &http.Server{
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{cert},
 			NextProtos:   []string{"h2"},
 		},
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			isExtendedConnect := r.Method == "CONNECT" && r.Proto == "HTTP/2.0" && r.Header.Get(":protocol") == "webtransport"
-			if !isExtendedConnect {
-				http.Error(w, "expected WebTransport over HTTP/2", http.StatusBadRequest)
+			err := wtServer.Upgrade(w, r)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+
 			w.Header().Set("Content-Type", "text/plain")
 			fmt.Fprintf(w, "OK: WebTransport over HTTP/2\n")
 		}),
@@ -67,27 +73,18 @@ func main() {
 	t := http2.Transport{
 		TLSClientConfig: &tls.Config{RootCAs: clientRoots},
 	}
-	req, err := http.NewRequest("CONNECT", fmt.Sprintf("https://%s/test", addr), nil)
-	req.Header.Set(":protocol", "webtransport")
-	fmt.Println("req", req.Header)
+	wtClient := &wth2.Client{
+		RoundTripper: &t,
+	}
+	req, err := wth2.NewRequest(fmt.Sprintf("https://%s/test", addr), []string{"baton"})
 	if err != nil {
 		log.Fatal(err)
 	}
-	resp, err := t.RoundTrip(req)
+	resp, err := wtClient.Connect(req)
 	if err != nil {
 		log.Fatalf("round trip failed: %v", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		log.Fatalf("unexpected status: %d %s", resp.StatusCode, resp.Status)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Print(string(body))
+	fmt.Println("resp", resp)
 }
 
 // generateSelfSignedCert creates a self-signed certificate for localhost and returns

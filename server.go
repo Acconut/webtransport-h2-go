@@ -12,41 +12,52 @@ type Server struct {
 	SelectProtocol func(r *http.Request, availableProtocols []string) (string, error)
 }
 
-func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) error {
+func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, error) {
 	if r.Method != "CONNECT" {
-		return fmt.Errorf("expected CONNECT method")
+		return nil, fmt.Errorf("expected CONNECT method")
 	}
 	if r.Proto != "HTTP/2.0" {
-		return fmt.Errorf("expected HTTP/2.0 protocol")
+		return nil, fmt.Errorf("expected HTTP/2.0 protocol")
 	}
 	if r.Header.Get(":protocol") != "webtransport" {
-		return fmt.Errorf("expected :protocol header to be set to webtransport")
+		return nil, fmt.Errorf("expected :protocol header to be set to webtransport")
 	}
+
+	var protocol string
 	if s.SelectProtocol != nil {
 		availableProtocols, err := parseAvailableProtocolsHeader(r.Header.Values("WT-Available-Protocols"))
 		if err != nil {
-			return err
+			return nil, err
 		}
 
-		protocol, err := s.SelectProtocol(r, availableProtocols)
+		protocol, err = s.SelectProtocol(r, availableProtocols)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		if protocol != "" {
 			if !slices.Contains(availableProtocols, protocol) {
-				return fmt.Errorf("selected protocol %q not in available protocols", protocol)
+				return nil, fmt.Errorf("selected protocol %q not in available protocols", protocol)
 			}
 
 			encodedProtocol, err := encodeSelectedProtocolHeader(protocol)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			w.Header().Set("WT-Protocol", encodedProtocol)
 		}
 	}
 
-	return nil
+	rc := http.NewResponseController(w)
+	fmt.Println(rc.EnableFullDuplex())
+
+	w.WriteHeader(http.StatusOK)
+	fmt.Println("Sent header")
+
+	// Very important to flush
+	rc.Flush()
+
+	return newSession(r.Body, w, protocol, true), nil
 }
 
 func parseAvailableProtocolsHeader(h []string) ([]string, error) {

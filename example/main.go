@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -9,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"log"
 	"math/big"
 	"net"
@@ -44,14 +46,29 @@ func main() {
 			NextProtos:   []string{"h2"},
 		},
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			err := wtServer.Upgrade(w, r)
+			session, err := wtServer.Upgrade(w, r)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+			defer session.Close()
 
-			w.Header().Set("Content-Type", "text/plain")
-			fmt.Fprintf(w, "OK: WebTransport over HTTP/2\n")
+			fmt.Println("[server] session", session.Protocol)
+
+			stream, err := session.AcceptStream(r.Context())
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			fmt.Println("[server] accepted stream")
+			defer stream.Close()
+
+			content, err := io.ReadAll(stream)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			fmt.Println("[server] content", string(content))
 		}),
 	}
 
@@ -76,15 +93,29 @@ func main() {
 	wtClient := &wth2.Client{
 		RoundTripper: &t,
 	}
-	req, err := wth2.NewRequest(fmt.Sprintf("https://%s/test", addr), []string{"baton"})
-	if err != nil {
-		log.Fatal(err)
-	}
-	resp, err := wtClient.Connect(req)
+	url := fmt.Sprintf("https://%s/test", addr)
+	session, err := wtClient.Connect(url, []string{"baton"}, http.Header{})
 	if err != nil {
 		log.Fatalf("round trip failed: %v", err)
 	}
-	fmt.Println("resp", resp)
+
+	fmt.Println("[client] session", session.Protocol)
+
+	stream, err := session.OpenStream()
+	if err != nil {
+		log.Fatalf("open stream failed: %v", err)
+	}
+
+	if n, err := stream.Write([]byte("Hello, world!")); err != nil {
+		log.Fatalf("write failed: %v", err)
+	} else {
+		fmt.Println("wrote", n, "bytes")
+	}
+
+	stream.Close()
+	session.Close()
+
+	server.Shutdown(context.Background())
 }
 
 // generateSelfSignedCert creates a self-signed certificate for localhost and returns

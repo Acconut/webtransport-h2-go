@@ -25,6 +25,7 @@ func TestUnidirectionalStream(t *testing.T) {
 			}
 			stream.Close()
 			client.Close()
+			serverResBody.Close()
 		}()
 
 		go func() {
@@ -40,6 +41,7 @@ func TestUnidirectionalStream(t *testing.T) {
 			t.Logf("server read %d bytes", len(content))
 			stream.Close()
 			server.Close()
+			clientReqBody.Close()
 		}()
 
 		synctest.Wait()

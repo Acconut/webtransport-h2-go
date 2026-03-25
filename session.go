@@ -11,9 +11,6 @@ import (
 	"github.com/quic-go/quic-go/quicvarint"
 )
 
-const WtStreamCapsule = 0x190B4D3B
-const WtStreamFinCapsule = 0x190B4D3C
-
 type Session struct {
 	Protocol string
 
@@ -77,17 +74,15 @@ func (s *Session) readLoop() {
 			s.log.Printf("read error: %v", err)
 			return
 		}
-		s.log.Printf("received capsule type=0x%X", typ)
-
-		switch typ {
-		case WtStreamCapsule, WtStreamFinCapsule:
+		switch CapsuleType(typ) {
+		case CapsuleWTStream, CapsuleWTStreamFin:
 			id, err := quicvarint.Read(quicvarint.NewReader(content))
 			if err != nil {
 				// TODO: Probably better to discard data and continue with next capsule
 				s.log.Printf("read error: %v", err)
 				return
 			}
-			s.log.Printf("received capsule type=0x%X stream_id=%d bidi=%v ours=%v", typ, id, isBidirectionalStream(id), s.isOurStream(id))
+			s.log.Printf("received capsule %s stream_id=%d bidi=%v ours=%v", CapsuleType(typ), id, isBidirectionalStream(id), s.isOurStream(id))
 			if isBidirectionalStream(id) {
 				if stream, ok := s.streams[id]; ok {
 					// Provide data to stream
@@ -96,7 +91,7 @@ func (s *Session) readLoop() {
 						s.log.Printf("read error: %v", err)
 						return
 					}
-					if typ == WtStreamFinCapsule {
+					if CapsuleType(typ) == CapsuleWTStreamFin {
 						stream.pipeWriter.Close()
 					}
 				} else if !s.isOurStream(id) {
@@ -109,7 +104,7 @@ func (s *Session) readLoop() {
 						s.log.Printf("read error: %v", err)
 						return
 					}
-					if typ == WtStreamFinCapsule {
+					if CapsuleType(typ) == CapsuleWTStreamFin {
 						stream.pipeWriter.Close()
 					}
 				} else {
@@ -127,6 +122,9 @@ func (s *Session) readLoop() {
 				// 	// Peer initiated stream with our ID -> reject
 				// }
 			}
+		default:
+			s.log.Printf("received capsule %s", CapsuleType(typ))
+			_, _ = io.Copy(io.Discard, content)
 		}
 	}
 }
@@ -188,6 +186,6 @@ func (s *Session) AcceptStream(ctx context.Context) (io.ReadWriteCloser, error) 
 // }
 
 func (s *Session) writeCapsule(typ uint64, data []byte) (err error) {
-	s.log.Printf("sent capsule type=0x%X len=%d", typ, len(data))
+	s.log.Printf("sent capsule %s len=%d", CapsuleType(typ), len(data))
 	return http3.WriteCapsule(s.writer, http3.CapsuleType(typ), data)
 }

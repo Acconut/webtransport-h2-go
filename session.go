@@ -155,7 +155,8 @@ func (s *Session) nextStreamID(unidirectional bool) uint64 {
 	return baseID
 }
 
-func (s *Session) OpenStream() (io.ReadWriteCloser, error) {
+// TODO: Don't return io.ReadWriteCloser; return Stream.
+func (s *Session) OpenStream() (*Stream, error) {
 	stream := newStream(s, s.nextStreamID(true))
 	s.log.Printf("open stream id=%d", stream.ID)
 	s.streams[stream.ID] = stream

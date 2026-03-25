@@ -18,7 +18,7 @@ func TestBidirectionalStreamFromClient(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Logf("client opened stream id=%d", stream.(*Stream).ID)
+			t.Logf("client opened stream id=%d", stream.ID)
 			if n, err := stream.Write([]byte("Hello, world!")); err != nil {
 				t.Fatal(err)
 			} else {
@@ -61,7 +61,7 @@ func TestBidirectionalStreamFromServer(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Logf("server opened stream id=%d", stream.(*Stream).ID)
+			t.Logf("server opened stream id=%d", stream.ID)
 			if n, err := stream.Write([]byte("Hello from server")); err != nil {
 				t.Fatal(err)
 			} else {

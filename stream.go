@@ -6,6 +6,8 @@ import (
 	"github.com/quic-go/quic-go/quicvarint"
 )
 
+// TOOD: Make Stream implement net.Conn.
+// TODO: Stream should have WT-specific methods, e.g. to send a padding capsule, tell the peer to stop sending, etc.
 type Stream struct {
 	ID uint64
 

@@ -34,9 +34,8 @@ func (s *Stream) Write(p []byte) (n int, err error) {
 
 	s.session.log.Printf("[stream %v] writing %d bytes", s.ID, len(p))
 
-	capsuleData := make([]byte, quicvarint.Len(s.ID)+len(p))
-	quicvarint.Append(capsuleData, s.ID)
-	copy(capsuleData[quicvarint.Len(s.ID):], p)
+	capsuleData := quicvarint.Append(nil, s.ID)
+	capsuleData = append(capsuleData, p...)
 	return len(p), s.session.writeCapsule(uint64(CapsuleWTStream), capsuleData)
 }
 
@@ -66,8 +65,7 @@ func (s *Stream) Close() error {
 	s.pipeReader.Close()
 
 	s.session.log.Printf("[stream %v] closing stream", s.ID)
-	capsuleData := make([]byte, quicvarint.Len(s.ID))
-	quicvarint.Append(capsuleData, s.ID)
+	capsuleData := quicvarint.Append(nil, s.ID)
 	return s.session.writeCapsule(uint64(CapsuleWTStreamFin), capsuleData)
 }
 

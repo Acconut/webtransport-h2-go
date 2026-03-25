@@ -91,3 +91,75 @@ func TestBidirectionalStreamFromServer(t *testing.T) {
 		synctest.Wait()
 	})
 }
+
+func TestBidirectionalMultipleStreamsFromClient(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clientResBody, serverResBody := io.Pipe()
+		serverReqBody, clientReqBody := io.Pipe()
+
+		payloads := []string{
+			"stream-0",
+			"stream-1",
+			"stream-2",
+			"stream-3",
+			"stream-4",
+		}
+
+		go func() {
+			client := newSession(clientResBody, clientReqBody, "test", false)
+			for _, payload := range payloads {
+				stream, err := client.OpenStream()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := stream.Write([]byte(payload)); err != nil {
+					t.Fatal(err)
+				}
+				if err := stream.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			client.Close()
+			serverResBody.Close()
+		}()
+
+		go func() {
+			server := newSession(serverReqBody, serverResBody, "test", true)
+			type result struct {
+				idx     int
+				content string
+				err     error
+			}
+			resCh := make(chan result, len(payloads))
+
+			for i := 0; i < len(payloads); i++ {
+				stream, err := server.AcceptStream(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Start reading immediately so the session's read loop isn't blocked
+				// trying to deliver later peer-initiated streams to `incomingStreams`.
+				streamIdx := i
+				go func(st io.ReadWriteCloser, idx int) {
+					content, err := io.ReadAll(st)
+					resCh <- result{idx: idx, content: string(content), err: err}
+				}(stream, streamIdx)
+			}
+
+			for i := 0; i < len(payloads); i++ {
+				res := <-resCh
+				if res.err != nil {
+					t.Fatal(res.err)
+				}
+				if res.content != payloads[res.idx] {
+					t.Fatalf("stream %d: expected %q, got %q", res.idx, payloads[res.idx], res.content)
+				}
+			}
+
+			server.Close()
+			clientReqBody.Close()
+		}()
+
+		synctest.Wait()
+	})
+}

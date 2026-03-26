@@ -19,7 +19,7 @@ The tables below track support for settings and capsules:
 
 | Setting | Receive | Send |
 | --- | --- | --- |
-| `SETTINGS_ENABLE_CONNECT_PROTOCOL` | Yss | Yes |
+| `SETTINGS_ENABLE_CONNECT_PROTOCOL` | Yes | Yes |
 | `SETTINGS_WT_MAX_SESSIONS` | No | No |
 | `SETTINGS_WT_INITIAL_MAX_DATA` | No | No |
 | `SETTINGS_WT_INITIAL_MAX_STREAM_DATA_UNI` | No | No |
@@ -32,7 +32,7 @@ The tables below track support for settings and capsules:
 
 | Capsule | Receive | Send |
 | --- | --- | --- |
-| PADDING | No | No |
+| PADDING | Yes | Yes |
 | WT_RESET_STREAM | No | No |
 | WT_STOP_SENDING | No | No |
 | WT_STREAM | Yes | Yes |

@@ -75,6 +75,21 @@ func (s *Session) readLoop() {
 			return
 		}
 		switch CapsuleType(typ) {
+		case CapsulePadding:
+			// PADDING has no semantic value; consume and ignore it.
+			padding, err := io.ReadAll(content)
+			if err != nil {
+				s.log.Printf("read error: %v", err)
+				return
+			}
+			s.log.Printf("received capsule %s len=%d", CapsuleType(typ), len(padding))
+			for _, b := range padding {
+				// RFC allows receivers to ignore validation; we only log non-zero bytes.
+				if b != 0 {
+					s.log.Printf("received non-zero PADDING byte")
+					break
+				}
+			}
 		case CapsuleWTStream, CapsuleWTStreamFin:
 			id, err := quicvarint.Read(quicvarint.NewReader(content))
 			if err != nil {

@@ -1,6 +1,7 @@
 package wth2
 
 import (
+	"errors"
 	"io"
 
 	"github.com/quic-go/quic-go/quicvarint"
@@ -75,6 +76,19 @@ func (s *SendStream) Write(p []byte) (n int, err error) {
 	capsuleData := quicvarint.Append(nil, s.ID)
 	capsuleData = append(capsuleData, p...)
 	return len(p), s.session.writeCapsule(uint64(CapsuleWTStream), capsuleData)
+}
+
+// WritePadding sends a WebTransport PADDING capsule with an all-zero payload of length n.
+func (s *SendStream) WritePadding(n int) error {
+	if s.closed {
+		return io.ErrClosedPipe
+	}
+	if n < 0 {
+		return errors.New("padding length must be non-negative")
+	}
+	padding := make([]byte, n)
+	s.session.log.Printf("[stream %v] writing padding len=%d", s.ID, n)
+	return s.session.writeCapsule(uint64(CapsulePadding), padding)
 }
 
 func (s *ReceiveStream) receiveStreamData(data io.Reader) (err error) {

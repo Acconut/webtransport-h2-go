@@ -99,7 +99,7 @@ func (s *Session) readLoop() {
 					stream := newStream(s, id)
 					s.streams[id] = stream
 					s.incomingStreams <- stream
-					stream.receiveStreamData(content)
+					err = stream.receiveStreamData(content)
 					if err != nil {
 						s.log.Printf("read error: %v", err)
 						return
@@ -113,14 +113,36 @@ func (s *Session) readLoop() {
 					io.Copy(io.Discard, s.reader)
 				}
 			} else {
-				panic("unimplemented")
-				// if stream, ok := s.receiveStreams[id]; ok {
-				// 	// Provide data to stream
-				// } else if !s.isOurStream(id) {
-				// 	// New peer-initiated unidirectional stream -> accept
-				// } else {
-				// 	// Peer initiated stream with our ID -> reject
-				// }
+				// Unidirectional stream
+				if stream, ok := s.receiveStreams[id]; ok {
+					err = stream.receiveStreamData(content)
+					if err != nil {
+						s.log.Printf("read error: %v", err)
+						return
+					}
+					if CapsuleType(typ) == CapsuleWTStreamFin {
+						stream.pipeWriter.Close()
+						delete(s.receiveStreams, id)
+					}
+				} else if !s.isOurStream(id) {
+					// New peer-initiated unidirectional stream -> accept
+					stream := newReceiveStream(s, id)
+					s.receiveStreams[id] = stream
+					s.incomingUnidirectionalStreams <- stream
+					err = stream.receiveStreamData(content)
+					if err != nil {
+						s.log.Printf("read error: %v", err)
+						return
+					}
+					if CapsuleType(typ) == CapsuleWTStreamFin {
+						stream.pipeWriter.Close()
+						delete(s.receiveStreams, id)
+					}
+				} else {
+					// Peer sent data on our local send-only stream ID -> reject
+					s.log.Printf("dropping peer data for local send-only stream: %d", id)
+					_, _ = io.Copy(io.Discard, content)
+				}
 			}
 		default:
 			s.log.Printf("received capsule %s", CapsuleType(typ))
@@ -140,10 +162,10 @@ func isBidirectionalStream(id uint64) bool {
 	return id&0b10 == 0
 }
 
-func (s *Session) nextStreamID(unidirectional bool) uint64 {
+func (s *Session) nextStreamID(bidirectional bool) uint64 {
 	baseID := s.createdStreamCounter
 
-	if !unidirectional {
+	if !bidirectional {
 		baseID |= 0b10
 	}
 
@@ -155,19 +177,21 @@ func (s *Session) nextStreamID(unidirectional bool) uint64 {
 	return baseID
 }
 
-// TODO: Don't return io.ReadWriteCloser; return Stream.
 func (s *Session) OpenStream() (*Stream, error) {
 	stream := newStream(s, s.nextStreamID(true))
-	s.log.Printf("open stream id=%d", stream.ID)
+	s.log.Printf("open stream bidi=true id=%d", stream.ID)
 	s.streams[stream.ID] = stream
 	return stream, nil
 }
 
-func (s *Session) OpenUnidirectionalStream() (io.WriteCloser, error) {
-	return nil, nil
+func (s *Session) OpenUnidirectionalStream() (*SendStream, error) {
+	stream := newSendStream(s, s.nextStreamID(false))
+	s.log.Printf("open stream bidi=false id=%d", stream.ID)
+	s.sendStreams[stream.ID] = stream
+	return stream, nil
 }
 
-func (s *Session) AcceptStream(ctx context.Context) (io.ReadWriteCloser, error) {
+func (s *Session) AcceptStream(ctx context.Context) (*Stream, error) {
 	select {
 	case stream := <-s.incomingStreams:
 		s.log.Printf("accepted stream id=%d", stream.ID)
@@ -177,14 +201,14 @@ func (s *Session) AcceptStream(ctx context.Context) (io.ReadWriteCloser, error) 
 	}
 }
 
-// func (s *Session) AcceptUnidirectionalStream(ctx context.Context) (io.ReadCloser, error) {
-// 	select {
-// 	case stream := <-s.incomingUnidirectionalStreams:
-// 		return stream, nil
-// 	case <-ctx.Done():
-// 		return nil, ctx.Err()
-// 	}
-// }
+func (s *Session) AcceptUnidirectionalStream(ctx context.Context) (*ReceiveStream, error) {
+	select {
+	case stream := <-s.incomingUnidirectionalStreams:
+		return stream, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
 
 func (s *Session) writeCapsule(typ uint64, data []byte) (err error) {
 	s.log.Printf("sent capsule %s len=%d", CapsuleType(typ), len(data))

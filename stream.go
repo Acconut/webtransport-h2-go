@@ -11,17 +11,46 @@ import (
 type Stream struct {
 	ID uint64
 
+	*ReceiveStream
+	*SendStream
+
+	session *Session
+}
+
+type ReceiveStream struct {
+	ID uint64
+
 	// TODO: Lock
 	closed bool
 
-	session    *Session
+	session *Session
+
 	pipeWriter io.WriteCloser
 	pipeReader io.ReadCloser
 }
 
+type SendStream struct {
+	ID uint64
+
+	// TODO: Lock
+	closed bool
+
+	session *Session
+}
+
 func newStream(session *Session, id uint64) *Stream {
-	pipeReader, pipeWriter := io.Pipe()
 	return &Stream{
+		ID:            id,
+		session:       session,
+		ReceiveStream: newReceiveStream(session, id),
+		SendStream:    newSendStream(session, id),
+	}
+}
+
+func newReceiveStream(session *Session, id uint64) *ReceiveStream {
+	pipeReader, pipeWriter := io.Pipe()
+
+	return &ReceiveStream{
 		ID:         id,
 		session:    session,
 		pipeWriter: pipeWriter,
@@ -29,7 +58,14 @@ func newStream(session *Session, id uint64) *Stream {
 	}
 }
 
-func (s *Stream) Write(p []byte) (n int, err error) {
+func newSendStream(session *Session, id uint64) *SendStream {
+	return &SendStream{
+		ID:      id,
+		session: session,
+	}
+}
+
+func (s *SendStream) Write(p []byte) (n int, err error) {
 	if s.closed {
 		return 0, io.ErrClosedPipe
 	}
@@ -41,7 +77,7 @@ func (s *Stream) Write(p []byte) (n int, err error) {
 	return len(p), s.session.writeCapsule(uint64(CapsuleWTStream), capsuleData)
 }
 
-func (s *Stream) receiveStreamData(data io.Reader) (err error) {
+func (s *ReceiveStream) receiveStreamData(data io.Reader) (err error) {
 	if s.closed {
 		// Discard data if stream is closed
 		io.Copy(io.Discard, data)
@@ -54,31 +90,33 @@ func (s *Stream) receiveStreamData(data io.Reader) (err error) {
 	return err
 }
 
-func (s *Stream) Read(p []byte) (n int, err error) {
+func (s *ReceiveStream) Read(p []byte) (n int, err error) {
 	s.session.log.Printf("[stream %v] waiting for next read..", s.ID)
 	return s.pipeReader.Read(p)
 }
 
-func (s *Stream) Close() error {
+func (s *ReceiveStream) Close() error {
 	if s.closed {
 		return nil
 	}
 	s.closed = true
 	s.pipeReader.Close()
 
+	return nil
+}
+
+func (s *SendStream) Close() error {
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+
 	s.session.log.Printf("[stream %v] closing stream", s.ID)
 	capsuleData := quicvarint.Append(nil, s.ID)
 	return s.session.writeCapsule(uint64(CapsuleWTStreamFin), capsuleData)
 }
 
-type ReceiveStream struct {
-	ID uint64
-
-	session *Session
-}
-
-type SendStream struct {
-	ID uint64
-
-	session *Session
+func (s *Stream) Close() error {
+	s.ReceiveStream.Close()
+	return s.SendStream.Close()
 }

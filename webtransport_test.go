@@ -163,3 +163,93 @@ func TestBidirectionalMultipleStreamsFromClient(t *testing.T) {
 		synctest.Wait()
 	})
 }
+
+func TestUnidirectionalStreamFromClient(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clientResBody, serverResBody := io.Pipe()
+		serverReqBody, clientReqBody := io.Pipe()
+
+		const payload = "hello from client uni"
+
+		go func() {
+			client := newSession(clientResBody, clientReqBody, "test", false)
+			stream, err := client.OpenUnidirectionalStream()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := stream.Write([]byte(payload)); err != nil {
+				t.Fatal(err)
+			}
+			if err := stream.Close(); err != nil {
+				t.Fatal(err)
+			}
+			client.Close()
+			serverResBody.Close()
+		}()
+
+		go func() {
+			server := newSession(serverReqBody, serverResBody, "test", true)
+			stream, err := server.AcceptUnidirectionalStream(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			content, err := io.ReadAll(stream)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(content) != payload {
+				t.Fatalf("expected %q, got %q", payload, string(content))
+			}
+			stream.Close()
+			server.Close()
+			clientReqBody.Close()
+		}()
+
+		synctest.Wait()
+	})
+}
+
+func TestUnidirectionalStreamFromServer(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clientResBody, serverResBody := io.Pipe()
+		serverReqBody, clientReqBody := io.Pipe()
+
+		const payload = "hello from server uni"
+
+		go func() {
+			server := newSession(serverReqBody, serverResBody, "test", true)
+			stream, err := server.OpenUnidirectionalStream()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := stream.Write([]byte(payload)); err != nil {
+				t.Fatal(err)
+			}
+			if err := stream.Close(); err != nil {
+				t.Fatal(err)
+			}
+			server.Close()
+			clientReqBody.Close()
+		}()
+
+		go func() {
+			client := newSession(clientResBody, clientReqBody, "test", false)
+			stream, err := client.AcceptUnidirectionalStream(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			content, err := io.ReadAll(stream)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(content) != payload {
+				t.Fatalf("expected %q, got %q", payload, string(content))
+			}
+			stream.Close()
+			client.Close()
+			serverResBody.Close()
+		}()
+
+		synctest.Wait()
+	})
+}

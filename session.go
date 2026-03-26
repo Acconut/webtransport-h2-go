@@ -13,6 +13,9 @@ import (
 
 type Session struct {
 	Protocol string
+	// ReceiveBufferSize is the maximum buffered receive bytes per stream.
+	// A value <= 0 disables the limit.
+	ReceiveBufferSize int
 
 	// Client-initiated streams use even IDs, server-initiated streams use odd IDs.
 	isServer bool
@@ -33,6 +36,8 @@ type Session struct {
 	createdStreamCounter uint64
 }
 
+const defaultReceiveBufferSize = 64 * 1024
+
 func newSession(reader io.Reader, writer io.Writer, protocol string, isServer bool) *Session {
 	prefix := "[client] "
 	if isServer {
@@ -40,6 +45,7 @@ func newSession(reader io.Reader, writer io.Writer, protocol string, isServer bo
 	}
 	session := &Session{
 		Protocol:                      protocol,
+		ReceiveBufferSize:             defaultReceiveBufferSize,
 		isServer:                      isServer,
 		log:                           log.New(log.Writer(), prefix, log.LstdFlags),
 		reader:                        quicvarint.NewReader(reader),
@@ -107,7 +113,7 @@ func (s *Session) readLoop() {
 						return
 					}
 					if CapsuleType(typ) == CapsuleWTStreamFin {
-						stream.pipeWriter.Close()
+						stream.finishReceive()
 					}
 				} else if !s.isOurStream(id) {
 					// New peer-initiated bidirectional stream -> accept
@@ -120,7 +126,7 @@ func (s *Session) readLoop() {
 						return
 					}
 					if CapsuleType(typ) == CapsuleWTStreamFin {
-						stream.pipeWriter.Close()
+						stream.finishReceive()
 					}
 				} else {
 					// Peer initiated stream with our ID -> reject
@@ -136,7 +142,7 @@ func (s *Session) readLoop() {
 						return
 					}
 					if CapsuleType(typ) == CapsuleWTStreamFin {
-						stream.pipeWriter.Close()
+						stream.finishReceive()
 						delete(s.receiveStreams, id)
 					}
 				} else if !s.isOurStream(id) {
@@ -150,7 +156,7 @@ func (s *Session) readLoop() {
 						return
 					}
 					if CapsuleType(typ) == CapsuleWTStreamFin {
-						stream.pipeWriter.Close()
+						stream.finishReceive()
 						delete(s.receiveStreams, id)
 					}
 				} else {

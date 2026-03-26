@@ -359,3 +359,73 @@ func TestUnidirectionalStreamFromServerWithPaddingCapsule(t *testing.T) {
 		synctest.Wait()
 	})
 }
+
+func TestBidirectionalSecondStreamAcceptedWithoutReadingFirst(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clientResBody, serverResBody := io.Pipe()
+		serverReqBody, clientReqBody := io.Pipe()
+
+		go func() {
+			client := newSession(clientResBody, clientReqBody, "test", false)
+
+			first, err := client.OpenStream()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := first.Write([]byte("first")); err != nil {
+				t.Fatal(err)
+			}
+
+			second, err := client.OpenStream()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := second.Write([]byte("second")); err != nil {
+				t.Fatal(err)
+			}
+
+			first.Close()
+			second.Close()
+			client.Close()
+			serverResBody.Close()
+		}()
+
+		go func() {
+			server := newSession(serverReqBody, serverResBody, "test", true)
+
+			first, err := server.AcceptStream(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// Do not read first yet; verify second can still be accepted.
+			second, err := server.AcceptStream(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			secondData, err := io.ReadAll(second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(secondData) != "second" {
+				t.Fatalf("expected %q, got %q", "second", string(secondData))
+			}
+
+			firstData, err := io.ReadAll(first)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(firstData) != "first" {
+				t.Fatalf("expected %q, got %q", "first", string(firstData))
+			}
+
+			first.Close()
+			second.Close()
+			server.Close()
+			clientReqBody.Close()
+		}()
+
+		synctest.Wait()
+	})
+}

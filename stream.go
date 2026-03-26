@@ -3,6 +3,7 @@ package wth2
 import (
 	"errors"
 	"io"
+	"sync"
 
 	"github.com/quic-go/quic-go/quicvarint"
 )
@@ -26,8 +27,7 @@ type ReceiveStream struct {
 
 	session *Session
 
-	pipeWriter io.WriteCloser
-	pipeReader io.ReadCloser
+	recvBuffer *receiveBuffer
 }
 
 type SendStream struct {
@@ -49,13 +49,10 @@ func newStream(session *Session, id uint64) *Stream {
 }
 
 func newReceiveStream(session *Session, id uint64) *ReceiveStream {
-	pipeReader, pipeWriter := io.Pipe()
-
 	return &ReceiveStream{
 		ID:         id,
 		session:    session,
-		pipeWriter: pipeWriter,
-		pipeReader: pipeReader,
+		recvBuffer: newReceiveBuffer(session.ReceiveBufferSize),
 	}
 }
 
@@ -94,19 +91,23 @@ func (s *SendStream) WritePadding(n int) error {
 func (s *ReceiveStream) receiveStreamData(data io.Reader) (err error) {
 	if s.closed {
 		// Discard data if stream is closed
-		io.Copy(io.Discard, data)
+		_, _ = io.Copy(io.Discard, data)
 		return nil
 	}
 
 	s.session.log.Printf("[stream %v] receiving data..", s.ID)
-	n, err := io.Copy(s.pipeWriter, data)
-	s.session.log.Printf("[stream %v] received data len=%d", s.ID, n)
+	payload, err := io.ReadAll(data)
+	if err != nil {
+		return err
+	}
+	s.session.log.Printf("[stream %v] received data len=%d", s.ID, len(payload))
+	_, err = s.recvBuffer.write(payload)
 	return err
 }
 
 func (s *ReceiveStream) Read(p []byte) (n int, err error) {
 	s.session.log.Printf("[stream %v] waiting for next read..", s.ID)
-	return s.pipeReader.Read(p)
+	return s.recvBuffer.read(p)
 }
 
 func (s *ReceiveStream) Close() error {
@@ -114,9 +115,13 @@ func (s *ReceiveStream) Close() error {
 		return nil
 	}
 	s.closed = true
-	s.pipeReader.Close()
+	s.recvBuffer.close()
 
 	return nil
+}
+
+func (s *ReceiveStream) finishReceive() {
+	s.recvBuffer.close()
 }
 
 func (s *SendStream) Close() error {
@@ -133,4 +138,64 @@ func (s *SendStream) Close() error {
 func (s *Stream) Close() error {
 	s.ReceiveStream.Close()
 	return s.SendStream.Close()
+}
+
+var errReceiveBufferFull = errors.New("receive buffer full")
+
+type receiveBuffer struct {
+	mu       sync.Mutex
+	notEmpty *sync.Cond
+
+	data   []byte
+	closed bool
+
+	maxBytes int
+}
+
+func newReceiveBuffer(maxBytes int) *receiveBuffer {
+	b := &receiveBuffer{maxBytes: maxBytes}
+	b.notEmpty = sync.NewCond(&b.mu)
+	return b
+}
+
+func (b *receiveBuffer) write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.closed {
+		return 0, io.ErrClosedPipe
+	}
+	if b.maxBytes > 0 && len(b.data)+len(p) > b.maxBytes {
+		return 0, errReceiveBufferFull
+	}
+
+	b.data = append(b.data, p...)
+	b.notEmpty.Signal()
+	return len(p), nil
+}
+
+func (b *receiveBuffer) read(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for len(b.data) == 0 && !b.closed {
+		b.notEmpty.Wait()
+	}
+	if len(b.data) == 0 && b.closed {
+		return 0, io.EOF
+	}
+
+	n := copy(p, b.data)
+	b.data = b.data[n:]
+	return n, nil
+}
+
+func (b *receiveBuffer) close() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return
+	}
+	b.closed = true
+	b.notEmpty.Broadcast()
 }

@@ -45,7 +45,7 @@ The tables below track support for settings and capsules:
 | WT_STREAM_DATA_BLOCKED | No | No |
 | WT_STREAMS_BLOCKED (bidirectional) | No | No |
 | WT_STREAMS_BLOCKED (unidirectional) | No | No |
-| DATAGRAM | No | No |
+| DATAGRAM | Yes | Yes |
 | WT_CLOSE_SESSION | No | No |
 | WT_DRAIN_SESSION | No | No |
 

@@ -27,7 +27,7 @@ type ReceiveStream struct {
 
 	session *Session
 
-	recvBuffer *receiveBuffer
+	recvBuffer *streamReceiveBuffer
 }
 
 type SendStream struct {
@@ -52,7 +52,7 @@ func newReceiveStream(session *Session, id uint64) *ReceiveStream {
 	return &ReceiveStream{
 		ID:         id,
 		session:    session,
-		recvBuffer: newReceiveBuffer(session.ReceiveBufferSize),
+		recvBuffer: newStreamReceiveBuffer(session.StreamReceiveBufferSize),
 	}
 }
 
@@ -140,9 +140,9 @@ func (s *Stream) Close() error {
 	return s.SendStream.Close()
 }
 
-var errReceiveBufferFull = errors.New("receive buffer full")
+var errStreamReceiveBufferFull = errors.New("stream receive buffer full")
 
-type receiveBuffer struct {
+type streamReceiveBuffer struct {
 	mu       sync.Mutex
 	notEmpty *sync.Cond
 
@@ -152,13 +152,13 @@ type receiveBuffer struct {
 	maxBytes int
 }
 
-func newReceiveBuffer(maxBytes int) *receiveBuffer {
-	b := &receiveBuffer{maxBytes: maxBytes}
+func newStreamReceiveBuffer(maxBytes int) *streamReceiveBuffer {
+	b := &streamReceiveBuffer{maxBytes: maxBytes}
 	b.notEmpty = sync.NewCond(&b.mu)
 	return b
 }
 
-func (b *receiveBuffer) write(p []byte) (int, error) {
+func (b *streamReceiveBuffer) write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -166,7 +166,7 @@ func (b *receiveBuffer) write(p []byte) (int, error) {
 		return 0, io.ErrClosedPipe
 	}
 	if b.maxBytes > 0 && len(b.data)+len(p) > b.maxBytes {
-		return 0, errReceiveBufferFull
+		return 0, errStreamReceiveBufferFull
 	}
 
 	b.data = append(b.data, p...)
@@ -174,7 +174,7 @@ func (b *receiveBuffer) write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (b *receiveBuffer) read(p []byte) (int, error) {
+func (b *streamReceiveBuffer) read(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -190,7 +190,7 @@ func (b *receiveBuffer) read(p []byte) (int, error) {
 	return n, nil
 }
 
-func (b *receiveBuffer) close() {
+func (b *streamReceiveBuffer) close() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {

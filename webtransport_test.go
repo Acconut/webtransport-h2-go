@@ -1,6 +1,7 @@
 package wth2
 
 import (
+	"errors"
 	"io"
 	"testing"
 	"testing/synctest"
@@ -428,4 +429,115 @@ func TestBidirectionalSecondStreamAcceptedWithoutReadingFirst(t *testing.T) {
 
 		synctest.Wait()
 	})
+}
+
+func TestDatagramFromClient(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clientResBody, serverResBody := io.Pipe()
+		serverReqBody, clientReqBody := io.Pipe()
+
+		const payload = "hello datagram from client"
+
+		go func() {
+			client := newSession(clientResBody, clientReqBody, "test", false)
+			if err := client.SendDatagram([]byte(payload)); err != nil {
+				t.Fatal(err)
+			}
+			client.Close()
+			serverResBody.Close()
+		}()
+
+		go func() {
+			server := newSession(serverReqBody, serverResBody, "test", true)
+			got, err := server.ReceiveDatagram(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != payload {
+				t.Fatalf("expected %q, got %q", payload, string(got))
+			}
+			server.Close()
+			clientReqBody.Close()
+		}()
+
+		synctest.Wait()
+	})
+}
+
+func TestDatagramFromServer(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clientResBody, serverResBody := io.Pipe()
+		serverReqBody, clientReqBody := io.Pipe()
+
+		const payload = "hello datagram from server"
+
+		go func() {
+			server := newSession(serverReqBody, serverResBody, "test", true)
+			if err := server.SendDatagram([]byte(payload)); err != nil {
+				t.Fatal(err)
+			}
+			server.Close()
+			clientReqBody.Close()
+		}()
+
+		go func() {
+			client := newSession(clientResBody, clientReqBody, "test", false)
+			got, err := client.ReceiveDatagram(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != payload {
+				t.Fatalf("expected %q, got %q", payload, string(got))
+			}
+			client.Close()
+			serverResBody.Close()
+		}()
+
+		synctest.Wait()
+	})
+}
+
+func TestSendDatagramAfterClose(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clientResBody, serverResBody := io.Pipe()
+		serverReqBody, clientReqBody := io.Pipe()
+
+		client := newSession(clientResBody, clientReqBody, "test", false)
+		client.Close()
+		if err := client.SendDatagram([]byte("too late")); !errors.Is(err, ErrSessionClosed) {
+			t.Fatalf("expected ErrSessionClosed, got %v", err)
+		}
+
+		serverResBody.Close()
+		clientReqBody.Close()
+		serverReqBody.Close()
+		clientResBody.Close()
+	})
+}
+
+func TestDatagramReceiveBufferByteLimit(t *testing.T) {
+	buf := newDatagramReceiveBuffer(10)
+
+	if !buf.write([]byte("12345")) {
+		t.Fatal("expected first datagram to fit")
+	}
+	if !buf.write([]byte("678")) {
+		t.Fatal("expected second datagram to fit")
+	}
+	if buf.write([]byte("overflow")) {
+		t.Fatal("expected third datagram to be rejected")
+	}
+
+	got, err := buf.read(t.Context())
+	if err != nil || string(got) != "12345" {
+		t.Fatalf("first datagram: got %q, err %v", got, err)
+	}
+	got, err = buf.read(t.Context())
+	if err != nil || string(got) != "678" {
+		t.Fatalf("second datagram: got %q, err %v", got, err)
+	}
+
+	if !buf.write([]byte("ok")) {
+		t.Fatal("expected datagram to fit after reads free buffer space")
+	}
 }

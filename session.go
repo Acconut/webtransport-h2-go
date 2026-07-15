@@ -5,17 +5,23 @@ import (
 	"errors"
 	"io"
 	"log"
+	"sync"
 	"sync/atomic"
 
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
 )
 
+var ErrSessionClosed = errors.New("session closed")
+
 type Session struct {
 	Protocol string
-	// ReceiveBufferSize is the maximum buffered receive bytes per stream.
+	// StreamReceiveBufferSize is the maximum buffered receive bytes per stream.
 	// A value <= 0 disables the limit.
-	ReceiveBufferSize int
+	StreamReceiveBufferSize int
+	// DatagramReceiveBufferSize is the maximum buffered receive bytes for
+	// datagrams on the session. A value <= 0 disables the limit.
+	DatagramReceiveBufferSize int
 
 	// Client-initiated streams use even IDs, server-initiated streams use odd IDs.
 	isServer bool
@@ -25,8 +31,10 @@ type Session struct {
 	writer quicvarint.Writer
 
 	stop                          atomic.Bool
+	closeDatagramDeliveryOnce     sync.Once
 	incomingStreams               chan *Stream
 	incomingUnidirectionalStreams chan *ReceiveStream
+	datagramBuffer                *datagramReceiveBuffer
 
 	// TODO: Lock
 	streams        map[uint64]*Stream        // Bidirectional streams.
@@ -45,7 +53,8 @@ func newSession(reader io.Reader, writer io.Writer, protocol string, isServer bo
 	}
 	session := &Session{
 		Protocol:                      protocol,
-		ReceiveBufferSize:             defaultReceiveBufferSize,
+		StreamReceiveBufferSize:       defaultReceiveBufferSize,
+		DatagramReceiveBufferSize:     defaultReceiveBufferSize,
 		isServer:                      isServer,
 		log:                           log.New(log.Writer(), prefix, log.LstdFlags),
 		reader:                        quicvarint.NewReader(reader),
@@ -56,6 +65,7 @@ func newSession(reader io.Reader, writer io.Writer, protocol string, isServer bo
 		receiveStreams:                make(map[uint64]*ReceiveStream),
 		sendStreams:                   make(map[uint64]*SendStream),
 	}
+	session.datagramBuffer = newDatagramReceiveBuffer(session.DatagramReceiveBufferSize)
 
 	go session.readLoop()
 
@@ -64,9 +74,12 @@ func newSession(reader io.Reader, writer io.Writer, protocol string, isServer bo
 
 func (s *Session) Close() {
 	s.stop.Store(true)
+	s.closeDatagramDelivery()
 }
 
 func (s *Session) readLoop() {
+	defer s.closeDatagramDelivery()
+
 	for {
 		if s.stop.Load() {
 			return
@@ -165,11 +178,31 @@ func (s *Session) readLoop() {
 					_, _ = io.Copy(io.Discard, content)
 				}
 			}
+		case CapsuleDatagram:
+			payload, err := io.ReadAll(content)
+			if err != nil {
+				s.log.Printf("read error: %v", err)
+				return
+			}
+			s.log.Printf("received capsule %s len=%d", CapsuleType(typ), len(payload))
+			s.deliverDatagram(payload)
 		default:
 			s.log.Printf("received capsule %s", CapsuleType(typ))
 			_, _ = io.Copy(io.Discard, content)
 		}
 	}
+}
+
+func (s *Session) deliverDatagram(payload []byte) {
+	if !s.datagramBuffer.write(payload) {
+		s.log.Printf("dropping datagram: receive buffer full")
+	}
+}
+
+func (s *Session) closeDatagramDelivery() {
+	s.closeDatagramDeliveryOnce.Do(func() {
+		s.datagramBuffer.close()
+	})
 }
 
 func (s *Session) isOurStream(id uint64) bool {
@@ -234,4 +267,19 @@ func (s *Session) AcceptUnidirectionalStream(ctx context.Context) (*ReceiveStrea
 func (s *Session) writeCapsule(typ uint64, data []byte) (err error) {
 	s.log.Printf("sent capsule %s len=%d", CapsuleType(typ), len(data))
 	return http3.WriteCapsule(s.writer, http3.CapsuleType(typ), data)
+}
+
+// SendDatagram sends an unreliable datagram on the session.
+// Datagrams are not subject to WebTransport flow control.
+func (s *Session) SendDatagram(payload []byte) error {
+	if s.stop.Load() {
+		return ErrSessionClosed
+	}
+	return s.writeCapsule(uint64(CapsuleDatagram), payload)
+}
+
+// ReceiveDatagram waits for the next datagram from the peer.
+// The receiver may drop datagrams when the session receive buffer is full.
+func (s *Session) ReceiveDatagram(ctx context.Context) ([]byte, error) {
+	return s.datagramBuffer.read(ctx)
 }

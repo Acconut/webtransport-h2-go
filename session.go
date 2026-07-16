@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net/http"
 	"sync"
 	"sync/atomic"
 
@@ -26,12 +27,14 @@ type Session struct {
 	// Client-initiated streams use even IDs, server-initiated streams use odd IDs.
 	isServer bool
 
-	log    *log.Logger
-	reader quicvarint.Reader
-	writer quicvarint.Writer
+	log     *log.Logger
+	reader  quicvarint.Reader
+	writer  quicvarint.Writer
+	flusher http.Flusher // optional; discovered from the CONNECT stream writer
 
 	stop                          atomic.Bool
 	closeDatagramDeliveryOnce     sync.Once
+	writeMu                       sync.Mutex
 	incomingStreams               chan *Stream
 	incomingUnidirectionalStreams chan *ReceiveStream
 	datagramBuffer                *datagramReceiveBuffer
@@ -52,15 +55,18 @@ func newSession(reader io.Reader, writer io.Writer, protocol string, isServer bo
 		prefix = "[server] "
 	}
 	session := &Session{
-		Protocol:                      protocol,
-		StreamReceiveBufferSize:       defaultReceiveBufferSize,
-		DatagramReceiveBufferSize:     defaultReceiveBufferSize,
-		isServer:                      isServer,
-		log:                           log.New(log.Writer(), prefix, log.LstdFlags),
-		reader:                        quicvarint.NewReader(reader),
-		writer:                        quicvarint.NewWriter(writer),
-		incomingStreams:               make(chan *Stream),
-		incomingUnidirectionalStreams: make(chan *ReceiveStream),
+		Protocol:                  protocol,
+		StreamReceiveBufferSize:   defaultReceiveBufferSize,
+		DatagramReceiveBufferSize: defaultReceiveBufferSize,
+		isServer:                  isServer,
+		log:                       log.New(log.Writer(), prefix, log.LstdFlags),
+		reader:                    quicvarint.NewReader(reader),
+		writer:                    quicvarint.NewWriter(writer),
+		flusher:                   flusherFromWriter(writer),
+		// Buffered so the read loop can accept peer-opened streams before the
+		// application calls Accept* (e.g. server baton setup vs client connect).
+		incomingStreams:               make(chan *Stream, 16),
+		incomingUnidirectionalStreams: make(chan *ReceiveStream, 16),
 		streams:                       make(map[uint64]*Stream),
 		receiveStreams:                make(map[uint64]*ReceiveStream),
 		sendStreams:                   make(map[uint64]*SendStream),
@@ -265,8 +271,33 @@ func (s *Session) AcceptUnidirectionalStream(ctx context.Context) (*ReceiveStrea
 }
 
 func (s *Session) writeCapsule(typ uint64, data []byte) (err error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	s.log.Printf("sent capsule %s len=%d", CapsuleType(typ), len(data))
 	return http3.WriteCapsule(s.writer, http3.CapsuleType(typ), data)
+}
+
+// Flush pushes any capsules buffered on the underlying CONNECT stream to the peer.
+// On HTTP/2 servers this typically flushes the ResponseWriter's 4 KiB write buffer.
+// It is a no-op when the writer does not implement [http.Flusher] (e.g. in-memory pipes).
+//
+// Flush must be serialized with capsule writes: the HTTP/2 ResponseWriter's bufio
+// is not safe for concurrent Write and Flush.
+func (s *Session) Flush() {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	s.flusher.Flush()
+}
+
+type noopFlusher struct{}
+
+func (_ noopFlusher) Flush() {}
+
+func flusherFromWriter(w io.Writer) http.Flusher {
+	if f, ok := w.(http.Flusher); ok {
+		return f
+	}
+	return noopFlusher{}
 }
 
 // SendDatagram sends an unreliable datagram on the session.

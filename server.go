@@ -54,7 +54,7 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, erro
 	w.WriteHeader(http.StatusOK)
 	fmt.Println("Sent header")
 
-	// Very important to flush
+	// Very important to flush headers before handing the stream to the application.
 	rc.Flush()
 
 	return newSession(r.Body, w, protocol, true), nil

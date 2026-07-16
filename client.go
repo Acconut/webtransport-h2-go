@@ -58,6 +58,10 @@ func (c *Client) Connect(url string, availableProtocols []string, headers http.H
 }
 
 func parseSelectedProtocolHeader(h []string) (string, error) {
+	// WT-Protocol is optional; absent means no application protocol was negotiated.
+	if len(h) == 0 || (len(h) == 1 && h[0] == "") {
+		return "", nil
+	}
 	item, err := sfv.DecodeItem(h)
 	if err != nil {
 		return "", fmt.Errorf("invalid WT-Protocol header: %w", err)

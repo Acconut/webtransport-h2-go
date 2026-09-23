@@ -1,13 +1,37 @@
 # WebTransport over HTTP/2 (Go POC)
 
-Proof-of-concept implementation of [WebTransport over HTTP/2](https://www.ietf.org/archive/id/draft-ietf-webtrans-http2-14.txt) in Go.
+Proof-of-concept implementation of [WebTransport over HTTP/2](https://datatracker.ietf.org/doc/html/draft-ietf-webtrans-http2-15) in Go.
 
 WebTransport provides low-level client–server communication (streams, datagrams) over HTTP. This variant runs over HTTP/2 when UDP/QUIC is not available, using extended CONNECT and the Capsule Protocol.
 
 ## References
 
-- **WebTransport over HTTP/2**: [draft-ietf-webtrans-http2-14](https://www.ietf.org/archive/id/draft-ietf-webtrans-http2-14.txt)
+- **WebTransport over HTTP/2**: [draft-ietf-webtrans-http2-15](https://datatracker.ietf.org/doc/html/draft-ietf-webtrans-http2-15)
 - **WebTransport framework (overview)**: [draft-ietf-webtrans-overview-12](https://www.ietf.org/archive/id/draft-ietf-webtrans-overview-12.txt)
+
+## HTTP/2 stack
+
+Upstream Go (`golang.org/x/net/http2`) has no API for WebTransport SETTINGS. This repo vendors a local fork at [`third_party/net`](third_party/net) (see `FORK.md`) and pins it with:
+
+```go
+replace golang.org/x/net => ./third_party/net
+```
+
+Use `http2.ConfigureServer` (not only stdlib auto-HTTP/2) so the server sends WT SETTINGS:
+
+```go
+http2.ConfigureServer(srv, &http2.Server{
+    WebTransport: http2.DefaultWebTransportSettings(),
+})
+
+tr := &http2.Transport{
+    WebTransport: http2.DefaultClientWebTransportSettings(),
+}
+```
+
+Peer SETTINGS are available via `http2.PeerWebTransportSettingsFromContext` (server) and `ClientConn.PeerWebTransportSettings` (client).
+
+Extended CONNECT still requires `GODEBUG=http2xconnect=1`.
 
 ## Status
 
@@ -20,13 +44,15 @@ The tables below track support for settings and capsules:
 | Setting | Receive | Send |
 | --- | --- | --- |
 | `SETTINGS_ENABLE_CONNECT_PROTOCOL` | Yes | Yes |
-| `SETTINGS_WT_MAX_SESSIONS` | No | No |
-| `SETTINGS_WT_INITIAL_MAX_DATA` | No | No |
-| `SETTINGS_WT_INITIAL_MAX_STREAM_DATA_UNI` | No | No |
-| `SETTINGS_WT_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL` | No | No |
-| `SETTINGS_WT_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE` | No | No |
-| `SETTINGS_WT_INITIAL_MAX_STREAMS_UNI` | No | No |
-| `SETTINGS_WT_INITIAL_MAX_STREAMS_BIDI` | No | No |
+| `SETTINGS_WT_ENABLED` | Yes | Yes (server) |
+| `SETTINGS_WT_INITIAL_MAX_DATA` | Yes | Yes |
+| `SETTINGS_WT_INITIAL_MAX_STREAM_DATA_UNI` | Yes | Yes |
+| `SETTINGS_WT_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL` | Yes | Yes |
+| `SETTINGS_WT_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE` | Yes | Yes |
+| `SETTINGS_WT_INITIAL_MAX_STREAMS_UNI` | Yes | Yes |
+| `SETTINGS_WT_INITIAL_MAX_STREAMS_BIDI` | Yes | Yes |
+
+Received SETTINGS are stored on the HTTP/2 connection; applying them as session flow-control credit is still TODO (see `TODO.md`).
 
 ### Capsule types
 

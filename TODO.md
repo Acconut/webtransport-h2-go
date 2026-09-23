@@ -2,7 +2,7 @@
 
 Track work needed to support the [Devious Baton protocol](https://www.ietf.org/archive/id/draft-frindell-webtrans-devious-baton-00.html) for WebTransport-over-HTTP/2 interop testing.
 
-Reference: [WebTransport over HTTP/2 (draft-14)](https://www.ietf.org/archive/id/draft-ietf-webtrans-http2-14.txt).
+Reference: [WebTransport over HTTP/2 (draft-15)](https://datatracker.ietf.org/doc/html/draft-ietf-webtrans-http2-15).
 
 Each section below is intended to be **independently actionable** by a separate agent. Dependencies are called out explicitly.
 
@@ -18,6 +18,7 @@ Each section below is intended to be **independently actionable** by a separate 
 - [x] `PADDING` capsules (`WritePadding`)
 - [x] `DATAGRAM` capsules (`SendDatagram` / `ReceiveDatagram`)
 - [x] `SETTINGS_ENABLE_CONNECT_PROTOCOL`
+- [x] HTTP/2 WebTransport SETTINGS send/receive via local `third_party/net` fork (draft-15)
 
 ---
 
@@ -27,21 +28,23 @@ Each section below is intended to be **independently actionable** by a separate 
 
 **Goal:** Advertise and parse initial session limits so conformant peers can open streams and send data.
 
-**Spec:** draft-ietf-webtrans-http2 §7 (SETTINGS parameters).
+**Spec:** draft-ietf-webtrans-http2-15 §3.1, §4.3.1, §11.2.
 
 **Tasks:**
 
-- [ ] Define setting IDs and wire up receive/send in the HTTP/2 connection (client + server)
-- [ ] `SETTINGS_WT_INITIAL_MAX_DATA`
-- [ ] `SETTINGS_WT_INITIAL_MAX_STREAM_DATA_UNI`
-- [ ] `SETTINGS_WT_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL`
-- [ ] `SETTINGS_WT_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE`
-- [ ] `SETTINGS_WT_INITIAL_MAX_STREAMS_UNI`
-- [ ] `SETTINGS_WT_INITIAL_MAX_STREAMS_BIDI`
-- [ ] `SETTINGS_WT_MAX_SESSIONS` (if required by peers under test)
-- [ ] Update README settings table when done
+- [x] Local fork of `golang.org/x/net/http2` (`third_party/net`, `replace` in `go.mod`)
+- [x] Define setting IDs and wire up receive/send in the HTTP/2 connection (client + server)
+- [x] `SETTINGS_WT_ENABLED` (draft-15; replaces draft-14 `SETTINGS_WT_MAX_SESSIONS`)
+- [x] `SETTINGS_WT_INITIAL_MAX_DATA`
+- [x] `SETTINGS_WT_INITIAL_MAX_STREAM_DATA_UNI`
+- [x] `SETTINGS_WT_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL`
+- [x] `SETTINGS_WT_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE`
+- [x] `SETTINGS_WT_INITIAL_MAX_STREAMS_UNI`
+- [x] `SETTINGS_WT_INITIAL_MAX_STREAMS_BIDI`
+- [x] Update README settings table when done
+- [ ] Apply peer SETTINGS as initial session credit in `wth2.Session` (still defaults to capsules / `WebTransport-Init` today)
 
-**Notes:** Spec defaults are `0` for most limits — peers may refuse to proceed until limits are exchanged. Choose sensible non-zero defaults for local advertisement (e.g. unlimited or high limits for a POC).
+**Notes:** Spec defaults are `0` for most limits — peers may refuse to proceed until limits are exchanged. `http2.DefaultWebTransportSettings` / `DefaultClientWebTransportSettings` advertise non-zero POC defaults. Servers must call `http2.ConfigureServer` so the fork (not stdlib HTTP/2) owns the connection.
 
 **Depends on:** nothing (foundational).
 
@@ -256,7 +259,7 @@ Item **4** (datagrams) is done.
 
 | Priority | Item | Rationale |
 | --- | --- | --- |
-| 1 | 1 — SETTINGS | Unblocks credit exchange |
+| 1 | 1 — SETTINGS | Done for wire send/receive; still need Session credit apply |
 | 2 | 2 — Stream limits | Server setup opens `count` uni streams |
 | 3 | 3 — Flow control | Padded baton messages |
 | 4 | 5 — Session close | Clean/error termination |

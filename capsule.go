@@ -12,8 +12,8 @@ const (
 	CapsuleWTResetStream CapsuleType = 0x190B4D39
 	CapsuleWTStopSending CapsuleType = 0x190B4D3A
 
-	CapsuleWTStream    CapsuleType = 0x190B4D3B
-	CapsuleWTStreamFin CapsuleType = 0x190B4D3C
+	CapsuleWTStream    CapsuleType = 0x190B4D3C
+	CapsuleWTStreamFin CapsuleType = 0x190B4D3B
 
 	CapsuleWTMaxData       CapsuleType = 0x190B4D3D
 	CapsuleWTMaxStreamData CapsuleType = 0x190B4D3E

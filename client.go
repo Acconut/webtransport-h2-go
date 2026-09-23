@@ -20,41 +20,52 @@ func encodeAvailableProtocolsHeader(availableProtocols []string) (string, error)
 	return sfv.EncodeList(items)
 }
 
-func (c *Client) Connect(url string, availableProtocols []string, headers http.Header) (*Session, error) {
+// Connect establishes a WebTransport session over HTTP/2 extended CONNECT.
+//
+// The returned io.Closer is the CONNECT request body. Closing it sends FIN on
+// the client's send half of the CONNECT stream. [Session.Close] does not close
+// it; callers should close this after the session is done (and after any
+// [Session.CloseWithError], which must be followed by FIN per the drafts).
+func (c *Client) Connect(url string, availableProtocols []string, headers http.Header) (*Session, io.Closer, error) {
 	pr, pw := io.Pipe()
 	req, err := http.NewRequest("CONNECT", url, pr)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	req.Header = headers.Clone()
 	req.Header.Set(":protocol", "webtransport")
+	req.Header.Set("WebTransport-Init", "bl=1048576; br=1048576; u=1048576")
 
 	if len(availableProtocols) > 0 {
 		encodedAvailableProtocols, err := encodeAvailableProtocolsHeader(availableProtocols)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		req.Header.Set("WT-Available-Protocols", encodedAvailableProtocols)
 	}
 
 	res, err := c.RoundTripper.RoundTrip(req)
 	if err != nil {
-		return nil, fmt.Errorf("webtransport connection failed: %w", err)
+		_ = pw.Close()
+		return nil, nil, fmt.Errorf("webtransport connection failed: %w", err)
 	}
-	// Must not close body, as it is used by the session
-	// defer res.Body.Close()
+	// Must not close res.Body here; the session reads capsules from it.
 	fmt.Println("Received response")
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil, fmt.Errorf("webtransport connection failed: %d %s", res.StatusCode, res.Status)
+		_ = pw.Close()
+		_ = res.Body.Close()
+		return nil, nil, fmt.Errorf("webtransport connection failed: %d %s", res.StatusCode, res.Status)
 	}
 
 	protocol, err := parseSelectedProtocolHeader(res.Header.Values("WT-Protocol"))
 	if err != nil {
-		return nil, fmt.Errorf("invalid WT-Protocol header: %w", err)
+		_ = pw.Close()
+		_ = res.Body.Close()
+		return nil, nil, fmt.Errorf("invalid WT-Protocol header: %w", err)
 	}
 
-	return newSession(res.Body, pw, protocol, false), nil
+	return newSession(res.Body, pw, protocol, false), pw, nil
 }
 
 func parseSelectedProtocolHeader(h []string) (string, error) {

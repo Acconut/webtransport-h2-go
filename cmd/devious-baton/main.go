@@ -142,6 +142,11 @@ func cmdServe(args []string) error {
 			NextProtos:   []string{"h2"},
 		},
 	}
+	if err := http2.ConfigureServer(server, &http2.Server{
+		WebTransport: http2.DefaultWebTransportSettings(),
+	}); err != nil {
+		return err
+	}
 
 	ln, err := tls.Listen("tcp", *addr, server.TLSConfig)
 	if err != nil {
@@ -207,15 +212,19 @@ func cmdClient(args []string) error {
 	cfg.Padding = *padding
 
 	tlsConfig := &tls.Config{InsecureSkipVerify: *insecure}
-	t := &http2.Transport{TLSClientConfig: tlsConfig}
+	t := &http2.Transport{
+		TLSClientConfig: tlsConfig,
+		WebTransport:    http2.DefaultClientWebTransportSettings(),
+	}
 	client := &wth2.Client{RoundTripper: t}
 
 	log.Printf("connecting to %s", u.String())
-	session, err := client.Connect(u.String(), nil, http.Header{})
+	session, reqBody, err := client.Connect(u.String(), nil, http.Header{})
 	if err != nil {
 		return err
 	}
 	defer session.Close()
+	defer reqBody.Close() // FIN CONNECT request body (session.Close does not)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -279,6 +288,11 @@ func cmdSelftest(args []string) error {
 			NextProtos:   []string{"h2"},
 		},
 	}
+	if err := http2.ConfigureServer(httpServer, &http2.Server{
+		WebTransport: http2.DefaultWebTransportSettings(),
+	}); err != nil {
+		return err
+	}
 
 	ln, err := tls.Listen("tcp", "localhost:0", httpServer.TLSConfig)
 	if err != nil {
@@ -303,15 +317,17 @@ func cmdSelftest(args []string) error {
 
 	t := &http2.Transport{
 		TLSClientConfig: &tls.Config{RootCAs: roots},
+		WebTransport:    http2.DefaultClientWebTransportSettings(),
 	}
 	client := &wth2.Client{RoundTripper: t}
 
 	log.Printf("selftest connect %s", u.String())
-	session, err := client.Connect(u.String(), nil, http.Header{})
+	session, reqBody, err := client.Connect(u.String(), nil, http.Header{})
 	if err != nil {
 		return fmt.Errorf("client connect: %w", err)
 	}
 	defer session.Close()
+	defer reqBody.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -324,10 +340,14 @@ func cmdSelftest(args []string) error {
 	var cerr, serr error
 	select {
 	case cerr = <-clientErr:
+		// FIN CONNECT send half so the server read loop sees EOF instead of RST.
+		_ = reqBody.Close()
 		serr = <-serverErr
 	case serr = <-serverErr:
+		_ = reqBody.Close()
 		cerr = <-clientErr
 	case <-ctx.Done():
+		_ = reqBody.Close()
 		return ctx.Err()
 	}
 

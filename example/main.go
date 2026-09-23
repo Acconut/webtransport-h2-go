@@ -71,6 +71,11 @@ func main() {
 			fmt.Println("[server] content", string(content))
 		}),
 	}
+	if err := http2.ConfigureServer(server, &http2.Server{
+		WebTransport: http2.DefaultWebTransportSettings(),
+	}); err != nil {
+		log.Fatal(err)
+	}
 
 	listener, err := tls.Listen("tcp", "localhost:0", server.TLSConfig)
 	if err != nil {
@@ -89,12 +94,13 @@ func main() {
 
 	t := http2.Transport{
 		TLSClientConfig: &tls.Config{RootCAs: clientRoots},
+		WebTransport:    http2.DefaultClientWebTransportSettings(),
 	}
 	wtClient := &wth2.Client{
 		RoundTripper: &t,
 	}
 	url := fmt.Sprintf("https://%s/test", addr)
-	session, err := wtClient.Connect(url, []string{"baton"}, http.Header{})
+	session, reqBody, err := wtClient.Connect(url, []string{"baton"}, http.Header{})
 	if err != nil {
 		log.Fatalf("round trip failed: %v", err)
 	}
@@ -114,6 +120,7 @@ func main() {
 
 	stream.Close()
 	session.Close()
+	reqBody.Close() // FIN CONNECT request body
 
 	server.Shutdown(context.Background())
 }

@@ -14,3 +14,6 @@ require (
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 )
+
+// Local fork with WebTransport-over-HTTP/2 SETTINGS (draft-15).
+replace golang.org/x/net => ./third_party/net

@@ -2,10 +2,13 @@ package wth2
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -14,6 +17,21 @@ import (
 )
 
 var ErrSessionClosed = errors.New("session closed")
+
+// SessionCloseError is returned by [Session.CloseErr] after the session ends
+// with an application error (local [Session.CloseWithError] or peer WT_CLOSE_SESSION).
+type SessionCloseError struct {
+	Code    uint32
+	Message string
+	Remote  bool // true if the peer sent WT_CLOSE_SESSION
+}
+
+func (e *SessionCloseError) Error() string {
+	if e.Message == "" {
+		return fmt.Sprintf("session closed with application error 0x%x", e.Code)
+	}
+	return fmt.Sprintf("session closed with application error 0x%x: %s", e.Code, e.Message)
+}
 
 type Session struct {
 	Protocol string
@@ -33,11 +51,16 @@ type Session struct {
 	flusher http.Flusher // optional; discovered from the CONNECT stream writer
 
 	stop                          atomic.Bool
+	closeOnce                     sync.Once
+	done                          chan struct{}
 	closeDatagramDeliveryOnce     sync.Once
 	writeMu                       sync.Mutex
 	incomingStreams               chan *Stream
 	incomingUnidirectionalStreams chan *ReceiveStream
 	datagramBuffer                *datagramReceiveBuffer
+
+	closeErrMu sync.Mutex
+	closeErr   error
 
 	// TODO: Lock
 	streams        map[uint64]*Stream        // Bidirectional streams.
@@ -63,6 +86,7 @@ func newSession(reader io.Reader, writer io.Writer, protocol string, isServer bo
 		reader:                    quicvarint.NewReader(reader),
 		writer:                    quicvarint.NewWriter(writer),
 		flusher:                   flusherFromWriter(writer),
+		done:                      make(chan struct{}),
 		// Buffered so the read loop can accept peer-opened streams before the
 		// application calls Accept* (e.g. server baton setup vs client connect).
 		incomingStreams:               make(chan *Stream, 16),
@@ -78,13 +102,63 @@ func newSession(reader io.Reader, writer io.Writer, protocol string, isServer bo
 	return session
 }
 
+// Done is closed when the session has been closed locally or the peer ended it.
+func (s *Session) Done() <-chan struct{} {
+	return s.done
+}
+
+// CloseErr returns a [SessionCloseError] if the session closed with an
+// application error, otherwise nil (clean close or still open).
+func (s *Session) CloseErr() error {
+	s.closeErrMu.Lock()
+	defer s.closeErrMu.Unlock()
+	return s.closeErr
+}
+
+// Close stops session-level delivery (Accept, datagrams, read loop signalling).
+// It does not close the underlying CONNECT stream reader or writer: the HTTP
+// owner must FIN that stream (client: close the request-body closer from
+// [Client.Connect]; server: return from the handler after [Session.Done]).
 func (s *Session) Close() {
-	s.stop.Store(true)
-	s.closeDatagramDelivery()
+	s.closeOnce.Do(func() {
+		s.stop.Store(true)
+		s.closeDatagramDelivery()
+		close(s.done)
+	})
+}
+
+// CloseWithError sends a WT_CLOSE_SESSION capsule and then [Close]s the session.
+// Per the WebTransport drafts, the sender must then FIN the CONNECT stream;
+// this method does not do that (see [Close]).
+func (s *Session) CloseWithError(code uint32, message string) error {
+	if len(message) > 1024 {
+		return errors.New("close error message exceeds 1024 bytes")
+	}
+	if s.stop.Load() {
+		return ErrSessionClosed
+	}
+	payload := make([]byte, 4+len(message))
+	binary.BigEndian.PutUint32(payload[:4], code)
+	copy(payload[4:], message)
+	if err := s.writeCapsule(uint64(CapsuleWTCloseSession), payload); err != nil {
+		return err
+	}
+	s.Flush()
+	s.setCloseErr(&SessionCloseError{Code: code, Message: message, Remote: false})
+	s.Close()
+	return nil
+}
+
+func (s *Session) setCloseErr(err error) {
+	s.closeErrMu.Lock()
+	defer s.closeErrMu.Unlock()
+	if s.closeErr == nil {
+		s.closeErr = err
+	}
 }
 
 func (s *Session) readLoop() {
-	defer s.closeDatagramDelivery()
+	defer s.Close()
 
 	for {
 		if s.stop.Load() {
@@ -93,10 +167,12 @@ func (s *Session) readLoop() {
 
 		typ, content, err := http3.ParseCapsule(s.reader)
 		if err != nil {
-			if errors.Is(err, io.EOF) {
+			if isCleanConnectTeardown(err) {
 				return
 			}
-			s.log.Printf("read error: %v", err)
+			if !s.stop.Load() {
+				s.log.Printf("read error: %v", err)
+			}
 			return
 		}
 		switch CapsuleType(typ) {
@@ -104,7 +180,9 @@ func (s *Session) readLoop() {
 			// PADDING has no semantic value; consume and ignore it.
 			padding, err := io.ReadAll(content)
 			if err != nil {
-				s.log.Printf("read error: %v", err)
+				if !isCleanConnectTeardown(err) && !s.stop.Load() {
+					s.log.Printf("read error: %v", err)
+				}
 				return
 			}
 			s.log.Printf("received capsule %s len=%d", CapsuleType(typ), len(padding))
@@ -138,7 +216,9 @@ func (s *Session) readLoop() {
 					// New peer-initiated bidirectional stream -> accept
 					stream := newStream(s, id)
 					s.streams[id] = stream
-					s.incomingStreams <- stream
+					if !s.enqueueIncomingStream(stream) {
+						return
+					}
 					err = stream.receiveStreamData(content)
 					if err != nil {
 						s.log.Printf("read error: %v", err)
@@ -168,7 +248,9 @@ func (s *Session) readLoop() {
 					// New peer-initiated unidirectional stream -> accept
 					stream := newReceiveStream(s, id)
 					s.receiveStreams[id] = stream
-					s.incomingUnidirectionalStreams <- stream
+					if !s.enqueueIncomingUniStream(stream) {
+						return
+					}
 					err = stream.receiveStreamData(content)
 					if err != nil {
 						s.log.Printf("read error: %v", err)
@@ -187,15 +269,82 @@ func (s *Session) readLoop() {
 		case CapsuleDatagram:
 			payload, err := io.ReadAll(content)
 			if err != nil {
-				s.log.Printf("read error: %v", err)
+				if !isCleanConnectTeardown(err) && !s.stop.Load() {
+					s.log.Printf("read error: %v", err)
+				}
 				return
 			}
 			s.log.Printf("received capsule %s len=%d", CapsuleType(typ), len(payload))
 			s.deliverDatagram(payload)
+		case CapsuleWTCloseSession:
+			payload, err := io.ReadAll(content)
+			if err != nil {
+				if !isCleanConnectTeardown(err) && !s.stop.Load() {
+					s.log.Printf("read error: %v", err)
+				}
+				return
+			}
+			code, message, err := parseWTCloseSession(payload)
+			if err != nil {
+				s.log.Printf("invalid WT_CLOSE_SESSION: %v", err)
+				return
+			}
+			s.log.Printf("received capsule %s code=0x%x msg=%q", CapsuleType(typ), code, message)
+			s.setCloseErr(&SessionCloseError{Code: code, Message: message, Remote: true})
+			return
+		case CapsuleWTDrainSession:
+			_, _ = io.Copy(io.Discard, content)
+			s.log.Printf("received capsule %s", CapsuleType(typ))
+			// Drain is advisory; keep the session open until Close / peer FIN.
 		default:
 			s.log.Printf("received capsule %s", CapsuleType(typ))
 			_, _ = io.Copy(io.Discard, content)
 		}
+	}
+}
+
+func parseWTCloseSession(payload []byte) (code uint32, message string, err error) {
+	if len(payload) < 4 {
+		return 0, "", errors.New("WT_CLOSE_SESSION payload too short")
+	}
+	code = binary.BigEndian.Uint32(payload[:4])
+	message = string(payload[4:])
+	if len(message) > 1024 {
+		return 0, "", errors.New("WT_CLOSE_SESSION message exceeds 1024 bytes")
+	}
+	return code, message, nil
+}
+
+// isCleanConnectTeardown reports whether err is a normal CONNECT-stream end
+// (peer FIN / HTTP/2 RST_STREAM with NO_ERROR), not a fault.
+func isCleanConnectTeardown(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	// net/http's bundled HTTP/2 uses its own StreamError type; match by text
+	// so we work with both net/http and golang.org/x/net/http2.
+	msg := err.Error()
+	return strings.Contains(msg, "NO_ERROR") && strings.Contains(msg, "stream error:")
+}
+
+func (s *Session) enqueueIncomingStream(stream *Stream) bool {
+	select {
+	case s.incomingStreams <- stream:
+		return true
+	case <-s.done:
+		return false
+	}
+}
+
+func (s *Session) enqueueIncomingUniStream(stream *ReceiveStream) bool {
+	select {
+	case s.incomingUnidirectionalStreams <- stream:
+		return true
+	case <-s.done:
+		return false
 	}
 }
 
@@ -238,6 +387,9 @@ func (s *Session) nextStreamID(bidirectional bool) uint64 {
 }
 
 func (s *Session) OpenStream() (*Stream, error) {
+	if s.stop.Load() {
+		return nil, ErrSessionClosed
+	}
 	stream := newStream(s, s.nextStreamID(true))
 	s.log.Printf("open stream bidi=true id=%d", stream.ID)
 	s.streams[stream.ID] = stream
@@ -245,6 +397,9 @@ func (s *Session) OpenStream() (*Stream, error) {
 }
 
 func (s *Session) OpenUnidirectionalStream() (*SendStream, error) {
+	if s.stop.Load() {
+		return nil, ErrSessionClosed
+	}
 	stream := newSendStream(s, s.nextStreamID(false))
 	s.log.Printf("open stream bidi=false id=%d", stream.ID)
 	s.sendStreams[stream.ID] = stream
@@ -256,6 +411,8 @@ func (s *Session) AcceptStream(ctx context.Context) (*Stream, error) {
 	case stream := <-s.incomingStreams:
 		s.log.Printf("accepted stream id=%d", stream.ID)
 		return stream, nil
+	case <-s.done:
+		return nil, ErrSessionClosed
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -265,6 +422,8 @@ func (s *Session) AcceptUnidirectionalStream(ctx context.Context) (*ReceiveStrea
 	select {
 	case stream := <-s.incomingUnidirectionalStreams:
 		return stream, nil
+	case <-s.done:
+		return nil, ErrSessionClosed
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}

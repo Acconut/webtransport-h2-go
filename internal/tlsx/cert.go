@@ -1,4 +1,4 @@
-// Package tlsx holds small TLS helpers shared by the example programs.
+// Package tlsx holds small TLS helpers shared by the commands.
 package tlsx
 
 import (

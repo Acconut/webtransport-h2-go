@@ -203,7 +203,7 @@ Each section below is intended to be **independently actionable** by a separate 
 
 **Depends on:** transport items 2–6 (full interop); partial handler can be developed earlier against current stream-only support.
 
-**Suggested location:** new package `baton/` or `example/devious-baton/`.
+**Location:** `internal/baton`, served by `cmd/devious-baton` and `cmd/demoserver`.
 
 ### 7. Session establishment and query parameters
 
@@ -240,7 +240,7 @@ Each section below is intended to be **independently actionable** by a separate 
 
 ### 11. Example / interop binary
 
-- [ ] Replace or supplement `example/main.go` with a runnable Devious Baton server
+- [x] Runnable Devious Baton server: `cmd/devious-baton serve` and `cmd/demoserver`
 - [ ] Optional: CLI client that connects to remote baton servers for interop
 - [ ] Document how to run against other implementations (e.g. browser client, pywebtransport)
 

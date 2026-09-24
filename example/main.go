@@ -78,14 +78,12 @@ func main() {
 
 	addr := listener.Addr().String()
 
-	t := http2.Transport{
+	url := fmt.Sprintf("https://%s/test", addr)
+	t := &http2.Transport{
 		TLSClientConfig: &tls.Config{RootCAs: clientRoots},
 		WebTransport:    http2.DefaultClientWebTransportSettings(),
 	}
-	wtClient := &wth2.Client{
-		RoundTripper: &t,
-	}
-	url := fmt.Sprintf("https://%s/test", addr)
+	wtClient := &wth2.Client{RoundTripper: t}
 	session, reqBody, err := wtClient.Connect(url, []string{"baton"}, http.Header{})
 	if err != nil {
 		log.Fatalf("round trip failed: %v", err)

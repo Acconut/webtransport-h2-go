@@ -9,6 +9,8 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
+	"log"
 	"math/big"
 	"net"
 	"time"
@@ -59,4 +61,23 @@ func GenerateSelfSignedCert() (tls.Certificate, *x509.CertPool, error) {
 	pool := x509.NewCertPool()
 	pool.AddCert(x509Cert)
 	return cert, pool, nil
+}
+
+// LoadCertificate loads a PEM certificate pair for a server.
+// When selfSigned is set, or both paths are empty, it generates an ephemeral
+// localhost certificate instead. Passing only one of certFile and keyFile is an error.
+func LoadCertificate(certFile, keyFile string, selfSigned bool) (tls.Certificate, error) {
+	switch {
+	case certFile != "" && keyFile != "":
+		return tls.LoadX509KeyPair(certFile, keyFile)
+	case selfSigned || (certFile == "" && keyFile == ""):
+		cert, _, err := GenerateSelfSignedCert()
+		if err != nil {
+			return tls.Certificate{}, err
+		}
+		log.Printf("using ephemeral self-signed certificate")
+		return cert, nil
+	default:
+		return tls.Certificate{}, fmt.Errorf("provide both -cert and -key, or use -selfsigned")
+	}
 }

@@ -18,6 +18,7 @@ import (
 	"golang.org/x/net/http2"
 
 	wth2 "github.com/Acconut/webtransport-h2-go"
+	"github.com/Acconut/webtransport-h2-go/internal/serve"
 	"github.com/Acconut/webtransport-h2-go/internal/tlsx"
 )
 
@@ -81,42 +82,18 @@ func cmdServe(args []string) error {
 	selfsigned := fs.Bool("selfsigned", false, "use an ephemeral self-signed certificate")
 	_ = fs.Parse(args)
 
-	cert, err := loadCert(*certFile, *keyFile, *selfsigned)
+	cert, err := tlsx.LoadCertificate(*certFile, *keyFile, *selfsigned)
 	if err != nil {
 		return err
 	}
 
-	server, err := newEchoHTTPServer(cert, *path)
+	server, err := newServer(cert, echoHandler(*path))
 	if err != nil {
 		return err
 	}
-
-	ln, err := tls.Listen("tcp", *addr, server.TLSConfig)
-	if err != nil {
-		return err
-	}
-	log.Printf("listening on https://%s%s", ln.Addr(), *path)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- server.Serve(ln)
-	}()
-
-	select {
-	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = server.Shutdown(shutdownCtx)
-		return nil
-	case err := <-errCh:
-		if err == http.ErrServerClosed {
-			return nil
-		}
-		return err
-	}
+	return serve.UntilSignal(*addr, server, func(a net.Addr) {
+		log.Printf("listening on https://%s%s", a, *path)
+	})
 }
 
 func cmdClient(args []string) error {
@@ -165,7 +142,7 @@ func cmdSelftest(args []string) error {
 	}
 
 	const path = "/webtransport"
-	server, err := newEchoHTTPServer(cert, path)
+	server, err := newServer(cert, echoHandler(path))
 	if err != nil {
 		return err
 	}
@@ -208,46 +185,9 @@ func cmdSelftest(args []string) error {
 	return nil
 }
 
-func loadCert(certFile, keyFile string, selfsigned bool) (tls.Certificate, error) {
-	switch {
-	case certFile != "" && keyFile != "":
-		return tls.LoadX509KeyPair(certFile, keyFile)
-	case selfsigned || (certFile == "" && keyFile == ""):
-		cert, _, err := tlsx.GenerateSelfSignedCert()
-		if err != nil {
-			return tls.Certificate{}, err
-		}
-		log.Printf("using ephemeral self-signed certificate")
-		return cert, nil
-	default:
-		return tls.Certificate{}, fmt.Errorf("provide both -cert and -key, or use -selfsigned")
-	}
-}
-
-func newEchoHTTPServer(cert tls.Certificate, path string) (*http.Server, error) {
-	wtServer := &wth2.Server{
-		SelectProtocol: func(r *http.Request, available []string) (string, error) {
-			if slices.Contains(available, echoProtocol) {
-				return echoProtocol, nil
-			}
-			return "", nil
-		},
-	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
-		session, err := wtServer.Upgrade(w, r)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		defer session.Close()
-		log.Printf("session protocol=%q", session.Protocol)
-		runEchoServer(r.Context(), session)
-	})
-
+func newServer(cert tls.Certificate, handler http.Handler) (*http.Server, error) {
 	server := &http.Server{
-		Handler: mux,
+		Handler: handler,
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{cert},
 			NextProtos:   []string{"h2"},
@@ -268,4 +208,28 @@ func dial(tlsConfig *tls.Config, rawURL string) (*wth2.Session, io.Closer, error
 	}
 	client := &wth2.Client{RoundTripper: t}
 	return client.Connect(rawURL, []string{echoProtocol}, http.Header{})
+}
+
+func echoHandler(path string) http.Handler {
+	wtServer := &wth2.Server{
+		SelectProtocol: func(r *http.Request, available []string) (string, error) {
+			if slices.Contains(available, echoProtocol) {
+				return echoProtocol, nil
+			}
+			return "", nil
+		},
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+		session, err := wtServer.Upgrade(w, r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		defer session.Close()
+		log.Printf("session protocol=%q", session.Protocol)
+		runEchoServer(r.Context(), session)
+	})
+	return mux
 }

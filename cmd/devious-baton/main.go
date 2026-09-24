@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"golang.org/x/net/http2"
 
 	wth2 "github.com/Acconut/webtransport-h2-go"
+	"github.com/Acconut/webtransport-h2-go/internal/serve"
 	"github.com/Acconut/webtransport-h2-go/internal/tlsx"
 )
 
@@ -74,24 +76,9 @@ func cmdServe(args []string) error {
 	padding := fs.Int("padding", 0, "padding bytes in baton messages we send")
 	_ = fs.Parse(args)
 
-	var (
-		cert tls.Certificate
-		err  error
-	)
-	switch {
-	case *certFile != "" && *keyFile != "":
-		cert, err = tls.LoadX509KeyPair(*certFile, *keyFile)
-		if err != nil {
-			return err
-		}
-	case *selfsigned || (*certFile == "" && *keyFile == ""):
-		cert, _, err = tlsx.GenerateSelfSignedCert()
-		if err != nil {
-			return err
-		}
-		log.Printf("using ephemeral self-signed certificate")
-	default:
-		return fmt.Errorf("provide both -cert and -key, or use -selfsigned")
+	cert, err := tlsx.LoadCertificate(*certFile, *keyFile, *selfsigned)
+	if err != nil {
+		return err
 	}
 
 	wtServer := &wth2.Server{}
@@ -122,45 +109,13 @@ func cmdServe(args []string) error {
 		}
 	})
 
-	server := &http.Server{
-		Handler: mux,
-		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			NextProtos:   []string{"h2"},
-		},
-	}
-	if err := http2.ConfigureServer(server, &http2.Server{
-		WebTransport: http2.DefaultWebTransportSettings(),
-	}); err != nil {
-		return err
-	}
-
-	ln, err := tls.Listen("tcp", *addr, server.TLSConfig)
+	server, err := newServer(cert, mux)
 	if err != nil {
 		return err
 	}
-	log.Printf("listening on https://%s%s", ln.Addr(), batonPath)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- server.Serve(ln)
-	}()
-
-	select {
-	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = server.Shutdown(shutdownCtx)
-		return nil
-	case err := <-errCh:
-		if err == http.ErrServerClosed {
-			return nil
-		}
-		return err
-	}
+	return serve.UntilSignal(*addr, server, func(a net.Addr) {
+		log.Printf("listening on https://%s%s", a, batonPath)
+	})
 }
 
 func cmdClient(args []string) error {
@@ -194,15 +149,8 @@ func cmdClient(args []string) error {
 	}
 	cfg.Padding = *padding
 
-	tlsConfig := &tls.Config{InsecureSkipVerify: *insecure}
-	t := &http2.Transport{
-		TLSClientConfig: tlsConfig,
-		WebTransport:    http2.DefaultClientWebTransportSettings(),
-	}
-	client := &wth2.Client{RoundTripper: t}
-
 	log.Printf("connecting to %s", u.String())
-	session, reqBody, err := client.Connect(u.String(), nil, http.Header{})
+	session, reqBody, err := dial(&tls.Config{InsecureSkipVerify: *insecure}, u.String(), nil)
 	if err != nil {
 		return err
 	}
@@ -260,16 +208,8 @@ func cmdSelftest(args []string) error {
 		serverErr <- runBaton(r.Context(), session, true, qcfg)
 	})
 
-	httpServer := &http.Server{
-		Handler: mux,
-		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			NextProtos:   []string{"h2"},
-		},
-	}
-	if err := http2.ConfigureServer(httpServer, &http2.Server{
-		WebTransport: http2.DefaultWebTransportSettings(),
-	}); err != nil {
+	httpServer, err := newServer(cert, mux)
+	if err != nil {
 		return err
 	}
 
@@ -294,14 +234,8 @@ func cmdSelftest(args []string) error {
 		RawQuery: cfg.query().Encode(),
 	}
 
-	t := &http2.Transport{
-		TLSClientConfig: &tls.Config{RootCAs: roots},
-		WebTransport:    http2.DefaultClientWebTransportSettings(),
-	}
-	client := &wth2.Client{RoundTripper: t}
-
 	log.Printf("selftest connect %s", u.String())
-	session, reqBody, err := client.Connect(u.String(), nil, http.Header{})
+	session, reqBody, err := dial(&tls.Config{RootCAs: roots}, u.String(), nil)
 	if err != nil {
 		return fmt.Errorf("client connect: %w", err)
 	}
@@ -340,4 +274,29 @@ func cmdSelftest(args []string) error {
 	}
 	log.Printf("selftest ok (baton=%d count=%d hops≈%d)", cfg.Baton, cfg.Count, 256-int(cfg.Baton))
 	return nil
+}
+
+func newServer(cert tls.Certificate, handler http.Handler) (*http.Server, error) {
+	server := &http.Server{
+		Handler: handler,
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			NextProtos:   []string{"h2"},
+		},
+	}
+	if err := http2.ConfigureServer(server, &http2.Server{
+		WebTransport: http2.DefaultWebTransportSettings(),
+	}); err != nil {
+		return nil, err
+	}
+	return server, nil
+}
+
+func dial(tlsConfig *tls.Config, rawURL string, protocols []string) (*wth2.Session, io.Closer, error) {
+	t := &http2.Transport{
+		TLSClientConfig: tlsConfig,
+		WebTransport:    http2.DefaultClientWebTransportSettings(),
+	}
+	client := &wth2.Client{RoundTripper: t}
+	return client.Connect(rawURL, protocols, http.Header{})
 }

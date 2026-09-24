@@ -68,7 +68,7 @@ The client and selftest -mode flag selects the channel:
 
 Examples:
   go run ./cmd/echo serve -addr localhost:4433 -selfsigned
-  go run ./cmd/echo client -url https://localhost:4433/webtransport -insecure -mode uni
+  go run ./cmd/echo client -url https://localhost:4433/webtransport/echo -insecure -mode uni
   go run ./cmd/echo selftest -mode datagram
 `)
 }
@@ -76,7 +76,7 @@ Examples:
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "localhost:4433", "TLS listen address")
-	path := fs.String("path", "/webtransport", "URL path that accepts WebTransport CONNECT")
+	path := fs.String("path", "/webtransport/echo", "URL path that accepts WebTransport CONNECT")
 	certFile := fs.String("cert", "", "TLS certificate PEM (optional with -selfsigned)")
 	keyFile := fs.String("key", "", "TLS private key PEM (optional with -selfsigned)")
 	selfsigned := fs.Bool("selfsigned", false, "use an ephemeral self-signed certificate")
@@ -141,8 +141,7 @@ func cmdSelftest(args []string) error {
 		return err
 	}
 
-	const path = "/webtransport"
-	server, err := newServer(cert, echoHandler(path))
+	server, err := newServer(cert, echoHandler("/webtransport/echo"))
 	if err != nil {
 		return err
 	}
@@ -161,7 +160,7 @@ func cmdSelftest(args []string) error {
 	defer server.Close()
 
 	host := ln.Addr().(*net.TCPAddr).String()
-	rawURL := "https://" + host + path
+	rawURL := "https://" + host + "/webtransport/echo"
 	log.Printf("selftest %s %s (%d bytes)", mode, rawURL, len(*data))
 
 	session, reqBody, err := dial(&tls.Config{RootCAs: roots}, rawURL)

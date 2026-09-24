@@ -11,6 +11,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -22,6 +23,8 @@ import (
 	"github.com/Acconut/webtransport-h2-go/internal/serve"
 	"github.com/Acconut/webtransport-h2-go/internal/tlsx"
 )
+
+var release = "unknown"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
@@ -42,6 +45,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle(echo.Path, echo.Handler())
 	mux.Handle(baton.Path, baton.Handler(*maxCount, *padding))
+	mux.HandleFunc("GET /release", handleRelease)
 
 	server, err := newServer(cert, mux)
 	if err != nil {
@@ -53,6 +57,11 @@ func main() {
 	}); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func handleRelease(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprintln(w, release)
 }
 
 func newServer(cert tls.Certificate, handler http.Handler) (*http.Server, error) {

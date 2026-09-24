@@ -9,6 +9,12 @@ WebTransport provides low-level client–server communication (streams, datagram
 - **WebTransport over HTTP/2**: [draft-ietf-webtrans-http2-15](https://datatracker.ietf.org/doc/html/draft-ietf-webtrans-http2-15)
 - **WebTransport framework (overview)**: [draft-ietf-webtrans-overview-12](https://www.ietf.org/archive/id/draft-ietf-webtrans-overview-12.txt)
 
+## Commands
+
+- [`echo`](cmd/echo/README.md) — echo client, server, and selftest
+- [`devious-baton`](cmd/devious-baton/README.md) — Devious Baton client, server, and selftest
+- [`demoserver`](cmd/demoserver/README.md) — both endpoints on one TLS address
+
 ## HTTP/2 stack
 
 Upstream Go (`golang.org/x/net/http2`) has no API for WebTransport SETTINGS. This repo vendors a local fork at [`third_party/net`](third_party/net) (see `FORK.md`) and pins it with:

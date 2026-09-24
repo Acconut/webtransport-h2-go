@@ -68,11 +68,22 @@ type Session struct {
 	sendStreams    map[uint64]*SendStream    // Self-initiated, unidirectional streams.
 
 	createdStreamCounter uint64
+
+	// limits is the peer's grant for data and streams this endpoint sends.
+	limits sendLimits
 }
 
 const defaultReceiveBufferSize = 64 * 1024
 
 func newSession(reader io.Reader, writer io.Writer, protocol string, isServer bool) *Session {
+	return newSessionWithPeerLimits(reader, writer, protocol, isServer, nil)
+}
+
+// newSessionWithPeerLimits is newSession with the peer's initial send limits.
+// A nil peer leaves enforcement off so in-memory sessions keep working.
+// The limits are installed before the read loop starts, so a capsule cannot
+// race ahead of the SETTINGS snapshot.
+func newSessionWithPeerLimits(reader io.Reader, writer io.Writer, protocol string, isServer bool, peer *peerInitialLimits) *Session {
 	prefix := "[client] "
 	if isServer {
 		prefix = "[server] "
@@ -96,6 +107,9 @@ func newSession(reader io.Reader, writer io.Writer, protocol string, isServer bo
 		sendStreams:                   make(map[uint64]*SendStream),
 	}
 	session.datagramBuffer = newDatagramReceiveBuffer(session.DatagramReceiveBufferSize)
+	if peer != nil {
+		session.adoptPeerSendLimits(*peer)
+	}
 
 	go session.readLoop()
 
@@ -216,6 +230,7 @@ func (s *Session) readLoop() {
 					// New peer-initiated bidirectional stream -> accept
 					stream := newStream(s, id)
 					s.streams[id] = stream
+					s.trackSendStream(id)
 					if !s.enqueueIncomingStream(stream) {
 						return
 					}
@@ -391,6 +406,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 		return nil, ErrSessionClosed
 	}
 	stream := newStream(s, s.nextStreamID(true))
+	s.trackSendStream(stream.ID)
 	s.log.Printf("open stream bidi=true id=%d", stream.ID)
 	s.streams[stream.ID] = stream
 	return stream, nil
@@ -401,6 +417,7 @@ func (s *Session) OpenUnidirectionalStream() (*SendStream, error) {
 		return nil, ErrSessionClosed
 	}
 	stream := newSendStream(s, s.nextStreamID(false))
+	s.trackSendStream(stream.ID)
 	s.log.Printf("open stream bidi=false id=%d", stream.ID)
 	s.sendStreams[stream.ID] = stream
 	return stream, nil

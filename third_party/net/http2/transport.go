@@ -1527,6 +1527,8 @@ func (cs *clientStream) writeRequest(req *http.Request, streamf func(*clientStre
 	// RoundTrip to return successfully. Since the RoundTrip contract permits
 	// the caller to "mutate or reuse" the Request after closing the Response's Body,
 	// we must take care when referencing the Request from here on.
+	// Snapshot peer WebTransport SETTINGS at the moment CONNECT is sent.
+	cc.recordPeerWebTransportSettings(ctx)
 	err = cs.encodeAndWriteHeaders(req)
 	<-cc.reqHeaderMu
 	if err != nil {

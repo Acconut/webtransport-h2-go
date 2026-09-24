@@ -13,12 +13,12 @@ import (
 
 // Draft-ietf-webtrans-http2-15 §11.2 setting identifiers.
 const (
-	SettingWTEnabled                       SettingID = 0x2b60
-	SettingWTInitialMaxData                SettingID = 0x2b61
-	SettingWTInitialMaxStreamDataUni       SettingID = 0x2b62
-	SettingWTInitialMaxStreamDataBidiLocal SettingID = 0x2b63
-	SettingWTInitialMaxStreamsUni          SettingID = 0x2b64
-	SettingWTInitialMaxStreamsBidi         SettingID = 0x2b65
+	SettingWTEnabled                        SettingID = 0x2b60
+	SettingWTInitialMaxData                 SettingID = 0x2b61
+	SettingWTInitialMaxStreamDataUni        SettingID = 0x2b62
+	SettingWTInitialMaxStreamDataBidiLocal  SettingID = 0x2b63
+	SettingWTInitialMaxStreamsUni           SettingID = 0x2b64
+	SettingWTInitialMaxStreamsBidi          SettingID = 0x2b65
 	SettingWTInitialMaxStreamDataBidiRemote SettingID = 0x2b66
 )
 
@@ -45,12 +45,12 @@ type WebTransportSettings struct {
 	// Clients typically leave this false; they signal support via CONNECT.
 	Enabled bool
 
-	InitialMaxData                  uint32
-	InitialMaxStreamDataUni         uint32
-	InitialMaxStreamDataBidiLocal   uint32
-	InitialMaxStreamDataBidiRemote  uint32
-	InitialMaxStreamsUni            uint32
-	InitialMaxStreamsBidi           uint32
+	InitialMaxData                 uint32
+	InitialMaxStreamDataUni        uint32
+	InitialMaxStreamDataBidiLocal  uint32
+	InitialMaxStreamDataBidiRemote uint32
+	InitialMaxStreamsUni           uint32
+	InitialMaxStreamsBidi          uint32
 }
 
 // DefaultWebTransportSettings returns generous POC defaults suitable for
@@ -144,4 +144,48 @@ type webTransportPeerSettingsContextKey struct{}
 func PeerWebTransportSettingsFromContext(ctx context.Context) (WebTransportSettings, bool) {
 	v, ok := ctx.Value(PeerWebTransportSettingsContextKey).(WebTransportSettings)
 	return v, ok
+}
+
+// peerWTSettingsCapture records server SETTINGS at the moment the client
+// writes a request. Draft-ietf-webtrans-http2-15 §4.3.1: the server limits
+// that apply to a new session are those acknowledged immediately before
+// CONNECT is sent, not SETTINGS that arrive while the response is in flight.
+type peerWTSettingsCapture struct {
+	mu sync.Mutex
+	ok bool
+	s  WebTransportSettings
+}
+
+type peerWTSettingsCaptureKey struct{}
+
+func (c *peerWTSettingsCapture) store(s WebTransportSettings) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ok = true
+	c.s = s
+}
+
+func (c *peerWTSettingsCapture) get() (WebTransportSettings, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.s, c.ok
+}
+
+// ContextWithPeerWebTransportSettings arranges for the HTTP/2 client to
+// record the peer's WebTransport SETTINGS immediately before it writes this
+// request. The returned function reports that snapshot after RoundTrip.
+func ContextWithPeerWebTransportSettings(ctx context.Context) (context.Context, func() (WebTransportSettings, bool)) {
+	c := &peerWTSettingsCapture{}
+	ctx = context.WithValue(ctx, peerWTSettingsCaptureKey{}, c)
+	return ctx, c.get
+}
+
+// recordPeerWebTransportSettings stores the peer SETTINGS snapshot for a
+// request created with ContextWithPeerWebTransportSettings.
+func (cc *ClientConn) recordPeerWebTransportSettings(ctx context.Context) {
+	c, ok := ctx.Value(peerWTSettingsCaptureKey{}).(*peerWTSettingsCapture)
+	if !ok || c == nil {
+		return
+	}
+	c.store(cc.peerWebTransport.snapshot())
 }

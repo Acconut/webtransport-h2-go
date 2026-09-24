@@ -60,6 +60,16 @@ func TestWebTransportSettingsExchange(t *testing.T) {
 			return
 		}
 		defer session.Close()
+		uni, err := session.OpenUnidirectionalStream()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		limit, ok := session.TestingStreamSendLimit(uni.ID)
+		if !ok || limit != uint64(clientLimits.InitialMaxStreamDataUni) {
+			http.Error(w, "server did not copy client uni stream limit", http.StatusInternalServerError)
+			return
+		}
 		<-r.Context().Done()
 	})
 
@@ -118,6 +128,18 @@ func TestWebTransportSettingsExchange(t *testing.T) {
 	}
 	defer session.Close()
 	defer reqBody.Close()
+
+	stream, err := session.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit, ok := session.TestingStreamSendLimit(stream.ID)
+	if !ok {
+		t.Fatal("client session has no send limit for the new stream")
+	}
+	if limit != uint64(serverLimits.InitialMaxStreamDataBidiRemote) {
+		t.Fatalf("client bidi send limit = %d, want %d", limit, serverLimits.InitialMaxStreamDataBidiRemote)
+	}
 
 	peerServer := cc.PeerWebTransportSettings()
 	if !peerServer.Enabled {

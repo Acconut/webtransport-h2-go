@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/shogo82148/go-sfv"
+	"golang.org/x/net/http2"
 )
 
 type Server struct {
@@ -57,7 +58,12 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, erro
 	// Very important to flush headers before handing the stream to the application.
 	rc.Flush()
 
-	return newSession(r.Body, w, protocol, true), nil
+	var peer *peerInitialLimits
+	if settings, ok := http2.PeerWebTransportSettingsFromContext(r.Context()); ok {
+		copied := peerLimitsFromSettings(settings)
+		peer = &copied
+	}
+	return newSessionWithPeerLimits(r.Body, w, protocol, true, peer), nil
 }
 
 func parseAvailableProtocolsHeader(h []string) ([]string, error) {

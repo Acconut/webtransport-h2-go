@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/shogo82148/go-sfv"
+	"golang.org/x/net/http2"
 )
 
 type Client struct {
@@ -32,6 +33,8 @@ func (c *Client) Connect(url string, availableProtocols []string, headers http.H
 	if err != nil {
 		return nil, nil, err
 	}
+	ctx, peerSettings := http2.ContextWithPeerWebTransportSettings(req.Context())
+	req = req.WithContext(ctx)
 	req.Header = headers.Clone()
 	req.Header.Set(":protocol", "webtransport")
 
@@ -64,7 +67,23 @@ func (c *Client) Connect(url string, availableProtocols []string, headers http.H
 		return nil, nil, fmt.Errorf("invalid WT-Protocol header: %w", err)
 	}
 
-	return newSession(res.Body, pw, protocol, false), pw, nil
+	var peer *peerInitialLimits
+	if settings, ok := peerSettings(); ok {
+		copied := peerLimitsFromSettings(settings)
+		peer = &copied
+	}
+	return newSessionWithPeerLimits(res.Body, pw, protocol, false, peer), pw, nil
+}
+
+func peerLimitsFromSettings(s http2.WebTransportSettings) peerInitialLimits {
+	return peerInitialLimits{
+		maxData:              uint64(s.InitialMaxData),
+		maxStreamsUni:        uint64(s.InitialMaxStreamsUni),
+		maxStreamsBidi:       uint64(s.InitialMaxStreamsBidi),
+		streamDataUni:        uint64(s.InitialMaxStreamDataUni),
+		streamDataBidiLocal:  uint64(s.InitialMaxStreamDataBidiLocal),
+		streamDataBidiRemote: uint64(s.InitialMaxStreamDataBidiRemote),
+	}
 }
 
 func parseSelectedProtocolHeader(h []string) (string, error) {

@@ -311,6 +311,20 @@ func (s *Session) readLoop() {
 			_, _ = io.Copy(io.Discard, content)
 			s.log.Printf("received capsule %s", CapsuleType(typ))
 			// Drain is advisory; keep the session open until Close / peer FIN.
+		case CapsuleWTMaxData, CapsuleWTMaxStreamData, CapsuleWTMaxStreamsBidi, CapsuleWTMaxStreamsUni:
+			err := s.handleSendLimitCapsule(CapsuleType(typ), content)
+			if err == nil {
+				break
+			}
+			if fc := flowControlError(err); fc != nil {
+				s.log.Printf("flow control error: %v", fc)
+				s.setCloseErr(fc)
+				return
+			}
+			if !isCleanConnectTeardown(err) && !s.stop.Load() {
+				s.log.Printf("read error: %v", err)
+			}
+			return
 		default:
 			s.log.Printf("received capsule %s", CapsuleType(typ))
 			_, _ = io.Copy(io.Discard, content)

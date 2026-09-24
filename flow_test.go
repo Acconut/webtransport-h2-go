@@ -2,6 +2,7 @@ package wth2
 
 import (
 	"context"
+	"errors"
 	"io"
 	"testing"
 	"time"
@@ -112,6 +113,160 @@ func TestSessionWithoutPeerLimitsDoesNotCopy(t *testing.T) {
 	if _, ok := session.limits.streamMax[stream.ID]; ok {
 		t.Fatal("stream limit was copied without peer SETTINGS")
 	}
+}
+
+func TestCapsulesRaiseSendLimits(t *testing.T) {
+	peer := &peerInitialLimits{
+		maxData:              10,
+		maxStreamsUni:        1,
+		maxStreamsBidi:       1,
+		streamDataUni:        10,
+		streamDataBidiLocal:  20,
+		streamDataBidiRemote: 30,
+	}
+	reader, writer := io.Pipe()
+	t.Cleanup(func() {
+		writer.Close()
+		reader.Close()
+	})
+	session := newSessionWithPeerLimits(reader, io.Discard, "test", false, peer)
+	t.Cleanup(session.Close)
+
+	stream, err := session.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := quicvarint.NewWriter(writer)
+	if err := writeVarintCapsule(w, CapsuleWTMaxData, 40); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeStreamDataCapsule(w, stream.ID, 80); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeVarintCapsule(w, CapsuleWTMaxStreamsBidi, 4); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeVarintCapsule(w, CapsuleWTMaxStreamsUni, 5); err != nil {
+		t.Fatal(err)
+	}
+	// A stream capsule after the limit updates, so Read returns only once
+	// those capsules have been applied.
+	payload := quicvarint.Append(nil, stream.ID)
+	payload = append(payload, 'z')
+	if err := http3.WriteCapsule(w, http3.CapsuleType(CapsuleWTStream), payload); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 1)
+	if _, err := stream.Read(buf); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := streamSendLimit(t, session, stream.ID); got != 80 {
+		t.Fatalf("stream limit = %d, want 80", got)
+	}
+	session.limits.mu.Lock()
+	defer session.limits.mu.Unlock()
+	if session.limits.maxData != 40 || session.limits.maxStreamsBidi != 4 || session.limits.maxStreamsUni != 5 {
+		t.Fatalf("session limits = data %d bidi %d uni %d, want 40, 4, 5",
+			session.limits.maxData, session.limits.maxStreamsBidi, session.limits.maxStreamsUni)
+	}
+}
+
+func TestMaxStreamDataBeforeOpenIsKept(t *testing.T) {
+	peer := &peerInitialLimits{streamDataBidiRemote: 30}
+	reader, writer := io.Pipe()
+	t.Cleanup(func() {
+		writer.Close()
+		reader.Close()
+	})
+	session := newSessionWithPeerLimits(reader, io.Discard, "test", false, peer)
+	t.Cleanup(session.Close)
+
+	w := quicvarint.NewWriter(writer)
+	// Client's first bidirectional stream will be id 0. Raise it before
+	// OpenStream, then send a server-initiated stream (id 1) so AcceptStream
+	// returns only after the read loop has applied the raise.
+	if err := writeStreamDataCapsule(w, 0, 80); err != nil {
+		t.Fatal(err)
+	}
+	payload := quicvarint.Append(nil, 1)
+	payload = append(payload, 'z')
+	if err := http3.WriteCapsule(w, http3.CapsuleType(CapsuleWTStream), payload); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := session.AcceptStream(ctx); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := session.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened.ID != 0 {
+		t.Fatalf("opened id %d, want 0", opened.ID)
+	}
+	if got := streamSendLimit(t, session, opened.ID); got != 80 {
+		t.Fatalf("stream limit = %d, want 80 kept from WT_MAX_STREAM_DATA", got)
+	}
+}
+
+func TestDecreasedSendLimitClosesSession(t *testing.T) {
+	peer := &peerInitialLimits{maxData: 100, streamDataBidiRemote: 50, maxStreamsBidi: 3}
+	reader, writer := io.Pipe()
+	t.Cleanup(func() {
+		writer.Close()
+		reader.Close()
+	})
+	session := newSessionWithPeerLimits(reader, io.Discard, "test", false, peer)
+	t.Cleanup(session.Close)
+
+	if err := writeVarintCapsule(quicvarint.NewWriter(writer), CapsuleWTMaxData, 99); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-session.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for session to close")
+	}
+	var fc *FlowControlError
+	if !errors.As(session.CloseErr(), &fc) {
+		t.Fatalf("CloseErr = %v, want FlowControlError", session.CloseErr())
+	}
+}
+
+func TestMaxStreamsAboveLimitClosesSession(t *testing.T) {
+	reader, writer := io.Pipe()
+	t.Cleanup(func() {
+		writer.Close()
+		reader.Close()
+	})
+	session := newSessionWithPeerLimits(reader, io.Discard, "test", false, &peerInitialLimits{})
+	t.Cleanup(session.Close)
+
+	if err := writeVarintCapsule(quicvarint.NewWriter(writer), CapsuleWTMaxStreamsUni, maxStreamCount+1); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-session.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for session to close")
+	}
+	var fc *FlowControlError
+	if !errors.As(session.CloseErr(), &fc) {
+		t.Fatalf("CloseErr = %v, want FlowControlError", session.CloseErr())
+	}
+}
+
+func writeVarintCapsule(w quicvarint.Writer, typ CapsuleType, v uint64) error {
+	return http3.WriteCapsule(w, http3.CapsuleType(typ), quicvarint.Append(nil, v))
+}
+
+func writeStreamDataCapsule(w quicvarint.Writer, id, max uint64) error {
+	payload := quicvarint.Append(nil, id)
+	payload = quicvarint.Append(payload, max)
+	return http3.WriteCapsule(w, http3.CapsuleType(CapsuleWTMaxStreamData), payload)
 }
 
 func streamSendLimit(t *testing.T, s *Session, id uint64) uint64 {

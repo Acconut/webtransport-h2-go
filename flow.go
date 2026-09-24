@@ -1,6 +1,13 @@
 package wth2
 
-import "sync"
+import (
+	"errors"
+	"fmt"
+	"io"
+	"sync"
+
+	"github.com/quic-go/quic-go/quicvarint"
+)
 
 // peerInitialLimits is the peer's SETTINGS_WT_INITIAL_MAX_* grant for data
 // and streams this endpoint may send. Draft-ietf-webtrans-http2-15 §4.3.1.
@@ -80,4 +87,125 @@ func (s *Session) initialStreamSendLimitLocked(id uint64) uint64 {
 		return s.limits.streamDataBidiRemote
 	}
 	return s.limits.streamDataBidiLocal
+}
+
+// FlowControlError is a session error raised when the peer decreases a send
+// limit or sends a stream limit above 2^60. Draft-ietf-webtrans-http2-15
+// calls this WT_FLOW_CONTROL_ERROR.
+type FlowControlError struct {
+	Reason string
+}
+
+func (e *FlowControlError) Error() string {
+	return "webtransport flow control error: " + e.Reason
+}
+
+// maxStreamCount is the largest WT_MAX_STREAMS value. Stream IDs cannot
+// encode a count above 2^60.
+const maxStreamCount = 1 << 60
+
+func (s *Session) handleSendLimitCapsule(typ CapsuleType, content io.Reader) error {
+	switch typ {
+	case CapsuleWTMaxData:
+		max, err := readCapsuleVarints(content, 1)
+		if err != nil {
+			return err
+		}
+		s.log.Printf("received capsule %s max=%d", typ, max[0])
+		return s.raiseMaxData(max[0])
+	case CapsuleWTMaxStreamData:
+		fields, err := readCapsuleVarints(content, 2)
+		if err != nil {
+			return err
+		}
+		s.log.Printf("received capsule %s stream_id=%d max=%d", typ, fields[0], fields[1])
+		return s.raiseMaxStreamData(fields[0], fields[1])
+	case CapsuleWTMaxStreamsBidi, CapsuleWTMaxStreamsUni:
+		max, err := readCapsuleVarints(content, 1)
+		if err != nil {
+			return err
+		}
+		s.log.Printf("received capsule %s max=%d", typ, max[0])
+		return s.raiseMaxStreams(typ == CapsuleWTMaxStreamsBidi, max[0])
+	default:
+		_, _ = io.Copy(io.Discard, content)
+		return nil
+	}
+}
+
+func readCapsuleVarints(content io.Reader, n int) ([]uint64, error) {
+	r := quicvarint.NewReader(content)
+	out := make([]uint64, n)
+	for i := range out {
+		v, err := quicvarint.Read(r)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = v
+	}
+	if _, err := io.Copy(io.Discard, content); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *Session) raiseMaxData(max uint64) error {
+	s.limits.mu.Lock()
+	defer s.limits.mu.Unlock()
+	s.limits.active = true
+	if max < s.limits.maxData {
+		return &FlowControlError{Reason: fmt.Sprintf("WT_MAX_DATA %d is below %d", max, s.limits.maxData)}
+	}
+	s.limits.maxData = max
+	return nil
+}
+
+func (s *Session) raiseMaxStreamData(id, max uint64) error {
+	s.limits.mu.Lock()
+	defer s.limits.mu.Unlock()
+	s.limits.active = true
+	cur := s.initialStreamSendLimitLocked(id)
+	if s.limits.streamMax != nil {
+		if existing, ok := s.limits.streamMax[id]; ok {
+			cur = existing
+		}
+	}
+	if max < cur {
+		return &FlowControlError{Reason: fmt.Sprintf("WT_MAX_STREAM_DATA %d for stream %d is below %d", max, id, cur)}
+	}
+	if s.limits.streamMax == nil {
+		s.limits.streamMax = make(map[uint64]uint64)
+	}
+	s.limits.streamMax[id] = max
+	return nil
+}
+
+func (s *Session) raiseMaxStreams(bidi bool, max uint64) error {
+	if max > maxStreamCount {
+		return &FlowControlError{Reason: fmt.Sprintf("WT_MAX_STREAMS %d exceeds 2^60", max)}
+	}
+	s.limits.mu.Lock()
+	defer s.limits.mu.Unlock()
+	s.limits.active = true
+	cur := s.limits.maxStreamsUni
+	if bidi {
+		cur = s.limits.maxStreamsBidi
+	}
+	if max < cur {
+		return &FlowControlError{Reason: fmt.Sprintf("WT_MAX_STREAMS %d is below %d", max, cur)}
+	}
+	if bidi {
+		s.limits.maxStreamsBidi = max
+	} else {
+		s.limits.maxStreamsUni = max
+	}
+	return nil
+}
+
+func flowControlError(err error) *FlowControlError {
+	var fc *FlowControlError
+	if errors.As(err, &fc) {
+		return fc
+	}
+	return nil
 }

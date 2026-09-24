@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
 
 	"golang.org/x/net/http2"
 
@@ -15,10 +14,6 @@ import (
 )
 
 func main() {
-	if !strings.Contains(os.Getenv("GODEBUG"), "http2xconnect=1") {
-		log.Fatal("GODEBUG must contain http2xconnect=1 for this example to work")
-	}
-
 	f, err := os.OpenFile("keys", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		panic(err)

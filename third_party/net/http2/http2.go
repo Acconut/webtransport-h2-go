@@ -35,14 +35,10 @@ var (
 	logFrameWrites bool
 	logFrameReads  bool
 
-	// Enabling extended CONNECT by causes browsers to attempt to use
-	// WebSockets-over-HTTP/2. This results in problems when the server's websocket
-	// package doesn't support extended CONNECT.
-	//
-	// Disable extended CONNECT by default for now.
-	//
-	// Issue #71128.
-	disableExtendedConnectProtocol = true
+	// webtransport-h2-go: enable extended CONNECT (RFC 8441).
+	// Upstream disables it by default (issue #71128) because browsers then
+	// attempt WebSockets-over-HTTP/2 against servers that do not support it.
+	disableExtendedConnectProtocol = false
 )
 
 func init() {
@@ -54,9 +50,6 @@ func init() {
 		VerboseLogs = true
 		logFrameWrites = true
 		logFrameReads = true
-	}
-	if strings.Contains(e, "http2xconnect=1") {
-		disableExtendedConnectProtocol = false
 	}
 }
 

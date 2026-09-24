@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -57,27 +56,14 @@ Commands:
   client     Connect to a Devious Baton endpoint
   selftest   In-process server+client exchange (no external peer)
 
-Requires GODEBUG=http2xconnect=1 for HTTP/2 extended CONNECT.
-
 Examples:
-  GODEBUG=http2xconnect=1 go run ./cmd/devious-baton serve -addr localhost:4433
-  GODEBUG=http2xconnect=1 go run ./cmd/devious-baton client -url 'https://localhost:4433/webtransport/devious-baton?baton=42&count=1' -insecure
-  GODEBUG=http2xconnect=1 go run ./cmd/devious-baton selftest -baton 200 -count 1
+  go run ./cmd/devious-baton serve -addr localhost:4433
+  go run ./cmd/devious-baton client -url 'https://localhost:4433/webtransport/devious-baton?baton=42&count=1' -insecure
+  go run ./cmd/devious-baton selftest -baton 200 -count 1
 `)
 }
 
-func requireHTTP2ExtendedCONNECT() error {
-	if !strings.Contains(os.Getenv("GODEBUG"), "http2xconnect=1") {
-		return fmt.Errorf("GODEBUG must contain http2xconnect=1")
-	}
-	return nil
-}
-
 func cmdServe(args []string) error {
-	if err := requireHTTP2ExtendedCONNECT(); err != nil {
-		return err
-	}
-
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "localhost:4433", "TLS listen address")
 	certFile := fs.String("cert", "", "TLS certificate PEM (optional with -selfsigned)")
@@ -177,10 +163,6 @@ func cmdServe(args []string) error {
 }
 
 func cmdClient(args []string) error {
-	if err := requireHTTP2ExtendedCONNECT(); err != nil {
-		return err
-	}
-
 	fs := flag.NewFlagSet("client", flag.ExitOnError)
 	rawURL := fs.String("url", "", "WebTransport URL including path and query (required)")
 	insecure := fs.Bool("insecure", false, "skip TLS certificate verification")
@@ -233,10 +215,6 @@ func cmdClient(args []string) error {
 }
 
 func cmdSelftest(args []string) error {
-	if err := requireHTTP2ExtendedCONNECT(); err != nil {
-		return err
-	}
-
 	fs := flag.NewFlagSet("selftest", flag.ExitOnError)
 	baton := fs.Int("baton", 200, "initial baton (1–255)")
 	count := fs.Int("count", 1, "number of parallel batons")

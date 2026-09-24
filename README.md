@@ -31,8 +31,6 @@ tr := &http2.Transport{
 
 Peer SETTINGS are available via `http2.PeerWebTransportSettingsFromContext` (server) and `ClientConn.PeerWebTransportSettings` (client).
 
-Extended CONNECT still requires `GODEBUG=http2xconnect=1`.
-
 ## Status
 
 Early POC; developed interactively, piece by piece.

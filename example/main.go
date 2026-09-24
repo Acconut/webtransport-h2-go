@@ -15,8 +15,6 @@ import (
 	"math/big"
 	"net"
 	"net/http"
-	"os"
-	"strings"
 	"time"
 
 	"golang.org/x/net/http2"
@@ -25,10 +23,6 @@ import (
 )
 
 func main() {
-	if !strings.Contains(os.Getenv("GODEBUG"), "http2xconnect=1") {
-		log.Fatal("GODEBUG must contain http2xconnect=1 for this example to work")
-	}
-
 	cert, clientRoots, err := generateSelfSignedCert()
 	if err != nil {
 		log.Fatal(err)

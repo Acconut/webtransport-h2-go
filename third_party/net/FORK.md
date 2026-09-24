@@ -7,7 +7,7 @@ Purpose: advertise and observe WebTransport-over-HTTP/2 SETTINGS
 
 Patches (search for `webtransport-h2-go`):
 - `http2/webtransport_settings.go` — setting IDs, config, peer state
-- `http2/http2.go` — SettingID names / Valid() for WT_ENABLED
+- `http2/http2.go` — SettingID names / Valid() for WT_ENABLED; extended CONNECT enabled
 - `http2/server.go` — send + receive WT SETTINGS; expose via request context
 - `http2/transport.go` — send + receive WT SETTINGS on ClientConn
 

@@ -15,28 +15,6 @@ WebTransport provides low-level client–server communication (streams, datagram
 - [`devious-baton`](cmd/devious-baton/README.md) — Devious Baton client, server, and selftest
 - [`demoserver`](cmd/demoserver/README.md) — both endpoints on one TLS address
 
-## HTTP/2 stack
-
-Upstream Go (`golang.org/x/net/http2`) has no API for WebTransport SETTINGS. This repo vendors a local fork at [`third_party/net`](third_party/net) (see `FORK.md`) and pins it with:
-
-```go
-replace golang.org/x/net => ./third_party/net
-```
-
-Use `http2.ConfigureServer` (not only stdlib auto-HTTP/2) so the server sends WT SETTINGS:
-
-```go
-http2.ConfigureServer(srv, &http2.Server{
-    WebTransport: http2.DefaultWebTransportSettings(),
-})
-
-tr := &http2.Transport{
-    WebTransport: http2.DefaultClientWebTransportSettings(),
-}
-```
-
-Peer SETTINGS are available via `http2.PeerWebTransportSettingsFromContext` (server) and `ClientConn.PeerWebTransportSettings` (client).
-
 ## Status
 
 Early POC; developed interactively, piece by piece.
@@ -78,6 +56,10 @@ Received SETTINGS are stored on the HTTP/2 connection and copied into the sessio
 | DATAGRAM | Yes | Yes |
 | WT_CLOSE_SESSION | Yes | Yes |
 | WT_DRAIN_SESSION | Yes | No |
+
+## HTTP/2 stack
+
+Upstream Go (`golang.org/x/net/http2`) has no API for WebTransport SETTINGS and disables extended CONNECT. This repo vendors a local fork at [`third_party/net`](third_party/net) (see `FORK.md`).
 
 ## License
 

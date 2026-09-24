@@ -50,7 +50,7 @@ The tables below track support for settings and capsules:
 | `SETTINGS_WT_INITIAL_MAX_STREAMS_UNI` | Yes | Yes |
 | `SETTINGS_WT_INITIAL_MAX_STREAMS_BIDI` | Yes | Yes |
 
-Received SETTINGS are stored on the HTTP/2 connection; applying them as session flow-control credit is still TODO (see `TODO.md`).
+Received SETTINGS are stored on the HTTP/2 connection and copied into the session as the initial send grant. `WT_MAX_*` capsules can raise that grant. This session does not send those capsules.
 
 ### Capsule types
 
@@ -61,17 +61,17 @@ Received SETTINGS are stored on the HTTP/2 connection; applying them as session 
 | WT_STOP_SENDING | No | No |
 | WT_STREAM | Yes | Yes |
 | WT_STREAM (FIN) | Yes | Yes |
-| WT_MAX_DATA | No | No |
-| WT_MAX_STREAM_DATA | No | No |
-| WT_MAX_STREAMS (bidirectional) | No | No |
-| WT_MAX_STREAMS (unidirectional) | No | No |
+| WT_MAX_DATA | Yes | No |
+| WT_MAX_STREAM_DATA | Yes | No |
+| WT_MAX_STREAMS (bidirectional) | Yes | No |
+| WT_MAX_STREAMS (unidirectional) | Yes | No |
 | WT_DATA_BLOCKED | No | No |
 | WT_STREAM_DATA_BLOCKED | No | No |
 | WT_STREAMS_BLOCKED (bidirectional) | No | No |
 | WT_STREAMS_BLOCKED (unidirectional) | No | No |
 | DATAGRAM | Yes | Yes |
-| WT_CLOSE_SESSION | No | No |
-| WT_DRAIN_SESSION | No | No |
+| WT_CLOSE_SESSION | Yes | Yes |
+| WT_DRAIN_SESSION | Yes | No |
 
 ## License
 

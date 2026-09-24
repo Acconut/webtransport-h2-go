@@ -42,9 +42,10 @@ Each section below is intended to be **independently actionable** by a separate 
 - [x] `SETTINGS_WT_INITIAL_MAX_STREAMS_UNI`
 - [x] `SETTINGS_WT_INITIAL_MAX_STREAMS_BIDI`
 - [x] Update README settings table when done
-- [ ] Apply peer SETTINGS as initial session credit in `wth2.Session` (still defaults to capsules / `WebTransport-Init` today)
+- [x] Apply peer SETTINGS as the initial send grant in `wth2.Session` (copied onto each new stream; `ErrSendLimit` when exhausted)
+- [ ] Parse `WebTransport-Init` and use the greater of each header value and the matching SETTING
 
-**Notes:** Spec defaults are `0` for most limits — peers may refuse to proceed until limits are exchanged. `http2.DefaultWebTransportSettings` / `DefaultClientWebTransportSettings` advertise non-zero POC defaults. Servers must call `http2.ConfigureServer` so the fork (not stdlib HTTP/2) owns the connection.
+**Notes:** Spec defaults are `0` for most limits — peers may refuse to proceed until limits are exchanged. `http2.DefaultWebTransportSettings` / `DefaultClientWebTransportSettings` advertise non-zero POC defaults. Servers must call `http2.ConfigureServer` so the fork (not stdlib HTTP/2) owns the connection. In-memory sessions with no peer SETTINGS stay unlimited.
 
 **Depends on:** nothing (foundational).
 
@@ -60,13 +61,13 @@ Each section below is intended to be **independently actionable** by a separate 
 
 **Tasks:**
 
-- [ ] Parse incoming `WT_MAX_STREAMS` capsules (bidirectional `0x190B4D3F`, unidirectional `0x190B4D3E`)
+- [x] Parse incoming `WT_MAX_STREAMS` capsules (bidirectional `0x190B4D3F`, unidirectional `0x190B4D40`)
 - [ ] Send `WT_MAX_STREAMS` capsules to grant credit to the peer
 - [ ] Parse incoming `WT_STREAMS_BLOCKED` capsules (bidi + uni)
 - [ ] Send `WT_STREAMS_BLOCKED` when a local `OpenStream` / `OpenUnidirectionalStream` is blocked
-- [ ] Track separate credit counters for locally opened bidi vs uni streams
-- [ ] Make `OpenStream()` and `OpenUnidirectionalStream()` respect credit (return a distinct blocked error or block until credit arrives — pick one approach and document it)
-- [ ] Expose session-level API to close with error code `DA_YAMN` (see item 5)
+- [x] Track separate credit counters for locally opened bidi vs uni streams
+- [x] Make `OpenStream()` and `OpenUnidirectionalStream()` respect credit (they return `ErrSendLimit` and do not open; they do not block)
+- [x] Close with an application error via `Session.CloseWithError` (`DA_YAMN` is `errDAYAMN` in `internal/baton`)
 
 **Files likely touched:** `session.go`, `capsule.go`, possibly `client.go` / `server.go` for SETTINGS integration.
 
@@ -74,9 +75,9 @@ Each section below is intended to be **independently actionable** by a separate 
 
 **Tests to add:**
 
-- Peer grants limited uni credit; N-th `OpenUnidirectionalStream` fails or blocks
-- Sending `WT_MAX_STREAMS` increases allowed opens
-- `WT_STREAMS_BLOCKED` emitted when appropriate
+- [x] Peer grants limited uni credit; N-th `OpenUnidirectionalStream` returns `ErrSendLimit`
+- [x] A higher `WT_MAX_STREAMS` increases allowed opens
+- [ ] `WT_STREAMS_BLOCKED` emitted when appropriate
 
 ---
 
@@ -88,12 +89,14 @@ Each section below is intended to be **independently actionable** by a separate 
 
 **Tasks:**
 
-- [ ] Parse/send `WT_MAX_DATA` capsules
-- [ ] Parse/send `WT_MAX_STREAM_DATA` capsules
+- [x] Parse incoming `WT_MAX_DATA` capsules
+- [ ] Send `WT_MAX_DATA` capsules to grant credit to the peer
+- [x] Parse incoming `WT_MAX_STREAM_DATA` capsules
+- [ ] Send `WT_MAX_STREAM_DATA` capsules to grant credit to the peer
 - [ ] Parse/send `WT_DATA_BLOCKED` and `WT_STREAM_DATA_BLOCKED` capsules
-- [ ] Track session bytes in flight vs peer limit
-- [ ] Track per-stream bytes sent vs peer stream limit (uni / bidi-local / bidi-remote)
-- [ ] Make `SendStream.Write` / `Stream.Write` block or return partial writes when credit exhausted (match chosen API from item 2)
+- [x] Track session bytes sent vs peer limit
+- [x] Track per-stream bytes sent vs peer stream limit (uni / bidi-local / bidi-remote)
+- [x] Make `SendStream.Write` / `Stream.Write` return `ErrSendLimit` when the whole write does not fit (nothing is sent; no partial write and no block)
 - [ ] Replace or complement `StreamReceiveBufferSize` hard cap with spec-compliant flow control (large baton padding must not fail with `errStreamReceiveBufferFull`)
 - [ ] Expose session-level API to close with error code `BORED` (see item 5)
 
@@ -103,9 +106,9 @@ Each section below is intended to be **independently actionable** by a separate 
 
 **Tests to add:**
 
-- Write blocked until peer sends `WT_MAX_STREAM_DATA`
-- Large payload (simulated baton padding) succeeds when credit is granted incrementally
-- Blocked signals sent when credit exhausted
+- [x] `Write` returns `ErrSendLimit` and sends nothing when session or stream credit is exhausted
+- [ ] Large payload (simulated baton padding) succeeds when credit is granted incrementally
+- [ ] Blocked signals sent when credit exhausted
 
 ---
 
@@ -146,13 +149,13 @@ Each section below is intended to be **independently actionable** by a separate 
 
 **Tasks:**
 
-- [ ] Parse incoming `WT_CLOSE_SESSION` capsules; surface error code to application
-- [ ] Parse incoming `WT_DRAIN_SESSION` capsules
-- [ ] Add `Session.CloseWithError(code uint32, message string) error` sending `WT_CLOSE_SESSION`
+- [x] Parse incoming `WT_CLOSE_SESSION` capsules; surface error code to application
+- [x] Parse incoming `WT_DRAIN_SESSION` capsules (advisory; the session stays open)
+- [x] Add `Session.CloseWithError(code uint32, message string) error` sending `WT_CLOSE_SESSION`
 - [ ] Add `Session.Drain()` sending `WT_DRAIN_SESSION` (if needed for interop)
-- [ ] Clean close: FIN on CONNECT stream when all work is done (Devious Baton §4.5)
-- [ ] Define Devious Baton session error codes as constants: `DA_YAMN`, `BRUH`, `SUS`, `BORED`
-- [ ] Update README capsule table
+- [x] Clean close: the CONNECT owner FINs that stream (`Session.Close` does not); the CLIs close the request body
+- [x] Define Devious Baton session error codes as constants: `DA_YAMN`, `BRUH`, `SUS`, `BORED` (`internal/baton`)
+- [x] Update README capsule table
 
 **Files likely touched:** `session.go`, `capsule.go`, `client.go`, `server.go`.
 
@@ -160,8 +163,8 @@ Each section below is intended to be **independently actionable** by a separate 
 
 **Tests to add:**
 
-- `CloseWithError` delivers code to peer
-- Peer `WT_CLOSE_SESSION` terminates session read loop with correct code
+- [x] `CloseWithError` delivers code to peer
+- [x] Peer `WT_CLOSE_SESSION` terminates session read loop with correct code
 
 ---
 
@@ -259,10 +262,10 @@ Item **4** (datagrams) is done.
 
 | Priority | Item | Rationale |
 | --- | --- | --- |
-| 1 | 1 — SETTINGS | Done for wire send/receive; still need Session credit apply |
-| 2 | 2 — Stream limits | Server setup opens `count` uni streams |
-| 3 | 3 — Flow control | Padded baton messages |
-| 4 | 5 — Session close | Clean/error termination |
+| 1 | 1 — SETTINGS | Send-side credit from SETTINGS is applied; `WebTransport-Init` is still unread |
+| 2 | 2 — Stream limits | Opens fail with `ErrSendLimit`; still need to send `WT_MAX_STREAMS` and blocked signals |
+| 3 | 3 — Flow control | Sends fail with `ErrSendLimit`; still need to send `WT_MAX_*` and replace the receive-buffer cap |
+| 4 | 5 — Session close | `CloseWithError` and drain receive are done; `Drain()` send is not |
 | 5 | 6 — Reset/stop | Error-handling interop |
 | 6 | 7–11 — Application | Wire transport into baton handler (item 10 can use datagrams) |
 

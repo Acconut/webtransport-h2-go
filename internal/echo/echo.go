@@ -1,4 +1,5 @@
-package main
+// Package echo is an echo endpoint for WebTransport over HTTP/2.
+package echo
 
 import (
 	"bytes"
@@ -12,12 +13,20 @@ import (
 	wth2 "github.com/Acconut/webtransport-h2-go"
 )
 
-type echoMode string
+const (
+	// Path is the URL path the demo server uses for this endpoint.
+	Path = "/webtransport/echo"
+	// Protocol is offered and selected as the WebTransport application protocol.
+	Protocol = "echo"
+)
+
+// Mode selects how the client sends a payload.
+type Mode string
 
 const (
-	modeBidi     echoMode = "bidi"
-	modeUni      echoMode = "uni"
-	modeDatagram echoMode = "datagram"
+	ModeBidi     Mode = "bidi"
+	ModeUni      Mode = "uni"
+	ModeDatagram Mode = "datagram"
 )
 
 // runEchoServer echoes whatever the peer sends:
@@ -130,15 +139,15 @@ func logEchoStop(what string, err error) {
 }
 
 // runEchoClient sends payload on the selected channel and checks the echo.
-func runEchoClient(ctx context.Context, session *wth2.Session, mode echoMode, payload []byte) error {
+func RunClient(ctx context.Context, session *wth2.Session, mode Mode, payload []byte) error {
 	var got []byte
 	var err error
 	switch mode {
-	case modeBidi:
+	case ModeBidi:
 		got, err = exchangeBidi(ctx, session, payload)
-	case modeUni:
+	case ModeUni:
 		got, err = exchangeUni(ctx, session, payload)
-	case modeDatagram:
+	case ModeDatagram:
 		got, err = exchangeDatagram(ctx, session, payload)
 	default:
 		return fmt.Errorf("mode must be bidi, uni, or datagram")

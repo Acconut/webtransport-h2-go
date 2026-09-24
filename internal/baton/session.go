@@ -1,4 +1,5 @@
-package main
+// Package baton implements the Devious Baton WebTransport endpoint.
+package baton
 
 import (
 	"context"
@@ -41,19 +42,20 @@ func (k streamKind) String() string {
 type batonSession struct {
 	sess     *wth2.Session
 	isServer bool
-	cfg      batonConfig
+	cfg      Config
 	log      *log.Logger
 
 	openMu sync.Mutex // serialize Open* until the library locks stream maps
 
-	active atomic.Int64
+	active   atomic.Int64
 	inflight sync.WaitGroup // handlers still reading/writing capsules
-	done   chan struct{}
-	errMu  sync.Mutex
-	err    error
+	done     chan struct{}
+	errMu    sync.Mutex
+	err      error
 }
 
-func runBaton(ctx context.Context, sess *wth2.Session, isServer bool, cfg batonConfig) error {
+// Run plays one Devious Baton session. isServer is true for the peer that accepts streams.
+func Run(ctx context.Context, sess *wth2.Session, isServer bool, cfg Config) error {
 	prefix := "[baton-client] "
 	if isServer {
 		prefix = "[baton-server] "

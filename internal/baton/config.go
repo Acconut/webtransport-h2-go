@@ -1,4 +1,4 @@
-package main
+package baton
 
 import (
 	"fmt"
@@ -15,24 +15,27 @@ const (
 	errBORED  uint32 = 0x04 // tired of waiting for credit / next message
 )
 
-const batonPath = "/webtransport/devious-baton"
+// Path is the URL path the demo server uses for this endpoint.
+const Path = "/webtransport/devious-baton"
 
-type batonConfig struct {
+// Config is the Devious Baton session parameters.
+type Config struct {
 	Version int
 	Baton   byte // 0 means server chooses randomly (only meaningful before selection)
 	Count   int
 	Padding int // padding bytes we send (kept small until flow control exists)
 }
 
-func defaultConfig() batonConfig {
-	return batonConfig{
+func defaultConfig() Config {
+	return Config{
 		Version: 0,
 		Count:   1,
 		Padding: 0,
 	}
 }
 
-func parseBatonQuery(q url.Values) (batonConfig, error) {
+// ParseQuery reads version, baton, and count from a WebTransport URL query.
+func ParseQuery(q url.Values) (Config, error) {
 	cfg := defaultConfig()
 
 	if v := q.Get("version"); v != "" {
@@ -65,7 +68,8 @@ func parseBatonQuery(q url.Values) (batonConfig, error) {
 	return cfg, nil
 }
 
-func (c batonConfig) query() url.Values {
+// Query encodes the parameters the peer must see on the CONNECT URL.
+func (c Config) Query() url.Values {
 	q := url.Values{}
 	q.Set("version", strconv.Itoa(c.Version))
 	q.Set("count", strconv.Itoa(c.Count))

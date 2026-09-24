@@ -11,18 +11,16 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"slices"
 	"syscall"
 	"time"
 
 	"golang.org/x/net/http2"
 
 	wth2 "github.com/Acconut/webtransport-h2-go"
+	"github.com/Acconut/webtransport-h2-go/internal/echo"
 	"github.com/Acconut/webtransport-h2-go/internal/serve"
 	"github.com/Acconut/webtransport-h2-go/internal/tlsx"
 )
-
-const echoProtocol = "echo"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
@@ -76,7 +74,7 @@ Examples:
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "localhost:4433", "TLS listen address")
-	path := fs.String("path", "/webtransport/echo", "URL path that accepts WebTransport CONNECT")
+	path := fs.String("path", echo.Path, "URL path that accepts WebTransport CONNECT")
 	certFile := fs.String("cert", "", "TLS certificate PEM (optional with -selfsigned)")
 	keyFile := fs.String("key", "", "TLS private key PEM (optional with -selfsigned)")
 	selfsigned := fs.Bool("selfsigned", false, "use an ephemeral self-signed certificate")
@@ -87,7 +85,9 @@ func cmdServe(args []string) error {
 		return err
 	}
 
-	server, err := newServer(cert, echoHandler(*path))
+	mux := http.NewServeMux()
+	mux.Handle(*path, echo.Handler())
+	server, err := newServer(cert, mux)
 	if err != nil {
 		return err
 	}
@@ -108,7 +108,7 @@ func cmdClient(args []string) error {
 	if *rawURL == "" {
 		return fmt.Errorf("-url is required")
 	}
-	mode := echoMode(*modeFlag)
+	mode := echo.Mode(*modeFlag)
 
 	tlsConfig := &tls.Config{InsecureSkipVerify: *insecure}
 	session, reqBody, err := dial(tlsConfig, *rawURL)
@@ -124,7 +124,7 @@ func cmdClient(args []string) error {
 	defer cancel()
 
 	log.Printf("client %s -> %s (%d bytes)", mode, *rawURL, len(*data))
-	return runEchoClient(ctx, session, mode, []byte(*data))
+	return echo.RunClient(ctx, session, mode, []byte(*data))
 }
 
 func cmdSelftest(args []string) error {
@@ -134,14 +134,16 @@ func cmdSelftest(args []string) error {
 	timeout := fs.Duration("timeout", 15*time.Second, "time to wait for the echo")
 	_ = fs.Parse(args)
 
-	mode := echoMode(*modeFlag)
+	mode := echo.Mode(*modeFlag)
 
 	cert, roots, err := tlsx.GenerateSelfSignedCert()
 	if err != nil {
 		return err
 	}
 
-	server, err := newServer(cert, echoHandler("/webtransport/echo"))
+	mux := http.NewServeMux()
+	mux.Handle(echo.Path, echo.Handler())
+	server, err := newServer(cert, mux)
 	if err != nil {
 		return err
 	}
@@ -160,7 +162,7 @@ func cmdSelftest(args []string) error {
 	defer server.Close()
 
 	host := ln.Addr().(*net.TCPAddr).String()
-	rawURL := "https://" + host + "/webtransport/echo"
+	rawURL := "https://" + host + echo.Path
 	log.Printf("selftest %s %s (%d bytes)", mode, rawURL, len(*data))
 
 	session, reqBody, err := dial(&tls.Config{RootCAs: roots}, rawURL)
@@ -173,7 +175,7 @@ func cmdSelftest(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	err = runEchoClient(ctx, session, mode, []byte(*data))
+	err = echo.RunClient(ctx, session, mode, []byte(*data))
 	// FIN the CONNECT stream so the server read loop unblocks.
 	_ = reqBody.Close()
 	_ = server.Shutdown(context.Background())
@@ -206,29 +208,5 @@ func dial(tlsConfig *tls.Config, rawURL string) (*wth2.Session, io.Closer, error
 		WebTransport:    http2.DefaultClientWebTransportSettings(),
 	}
 	client := &wth2.Client{RoundTripper: t}
-	return client.Connect(rawURL, []string{echoProtocol}, http.Header{})
-}
-
-func echoHandler(path string) http.Handler {
-	wtServer := &wth2.Server{
-		SelectProtocol: func(r *http.Request, available []string) (string, error) {
-			if slices.Contains(available, echoProtocol) {
-				return echoProtocol, nil
-			}
-			return "", nil
-		},
-	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
-		session, err := wtServer.Upgrade(w, r)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		defer session.Close()
-		log.Printf("session protocol=%q", session.Protocol)
-		runEchoServer(r.Context(), session)
-	})
-	return mux
+	return client.Connect(rawURL, []string{echo.Protocol}, http.Header{})
 }

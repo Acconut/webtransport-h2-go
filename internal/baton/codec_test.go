@@ -1,4 +1,4 @@
-package main
+package baton
 
 import (
 	"net/url"
@@ -33,7 +33,7 @@ func TestDecodeBatonTruncated(t *testing.T) {
 }
 
 func TestParseBatonQuery(t *testing.T) {
-	cfg, err := parseBatonQuery(url.Values{
+	cfg, err := ParseQuery(url.Values{
 		"version": {"0"},
 		"baton":   {"42"},
 		"count":   {"3"},
@@ -53,7 +53,7 @@ func TestParseBatonQueryRejects(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := parseBatonQuery(q); err == nil {
+		if _, err := ParseQuery(q); err == nil {
 			t.Fatalf("expected reject for %s", raw)
 		}
 	}

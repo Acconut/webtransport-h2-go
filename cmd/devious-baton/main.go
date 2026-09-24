@@ -18,6 +18,7 @@ import (
 	"golang.org/x/net/http2"
 
 	wth2 "github.com/Acconut/webtransport-h2-go"
+	"github.com/Acconut/webtransport-h2-go/internal/baton"
 	"github.com/Acconut/webtransport-h2-go/internal/serve"
 	"github.com/Acconut/webtransport-h2-go/internal/tlsx"
 )
@@ -81,40 +82,15 @@ func cmdServe(args []string) error {
 		return err
 	}
 
-	wtServer := &wth2.Server{}
-
 	mux := http.NewServeMux()
-	mux.HandleFunc(batonPath, func(w http.ResponseWriter, r *http.Request) {
-		cfg, err := parseBatonQuery(r.URL.Query())
-		if err != nil {
-			rejectBadRequest(w, err.Error())
-			return
-		}
-		if cfg.Count > *maxCount {
-			rejectBadRequest(w, fmt.Sprintf("count %d exceeds server max %d", cfg.Count, *maxCount))
-			return
-		}
-		cfg.Padding = *padding
-
-		session, err := wtServer.Upgrade(w, r)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		defer session.Close()
-
-		ctx := r.Context()
-		if err := runBaton(ctx, session, true, cfg); err != nil {
-			log.Printf("baton session: %v", err)
-		}
-	})
+	mux.Handle(baton.Path, baton.Handler(*maxCount, *padding))
 
 	server, err := newServer(cert, mux)
 	if err != nil {
 		return err
 	}
 	return serve.UntilSignal(*addr, server, func(a net.Addr) {
-		log.Printf("listening on https://%s%s", a, batonPath)
+		log.Printf("listening on https://%s%s", a, baton.Path)
 	})
 }
 
@@ -122,7 +98,7 @@ func cmdClient(args []string) error {
 	fs := flag.NewFlagSet("client", flag.ExitOnError)
 	rawURL := fs.String("url", "", "WebTransport URL including path and query (required)")
 	insecure := fs.Bool("insecure", false, "skip TLS certificate verification")
-	baton := fs.Int("baton", 0, "initial baton (1–255); adds query param if url has none")
+	batonValue := fs.Int("baton", 0, "initial baton (1–255); adds query param if url has none")
 	count := fs.Int("count", 0, "baton count; adds query param if url has none")
 	padding := fs.Int("padding", 0, "padding bytes in baton messages we send")
 	_ = fs.Parse(args)
@@ -135,15 +111,15 @@ func cmdClient(args []string) error {
 		return err
 	}
 	q := u.Query()
-	if q.Get("baton") == "" && *baton != 0 {
-		q.Set("baton", fmt.Sprintf("%d", *baton))
+	if q.Get("baton") == "" && *batonValue != 0 {
+		q.Set("baton", fmt.Sprintf("%d", *batonValue))
 	}
 	if q.Get("count") == "" && *count != 0 {
 		q.Set("count", fmt.Sprintf("%d", *count))
 	}
 	u.RawQuery = q.Encode()
 
-	cfg, err := parseBatonQuery(u.Query())
+	cfg, err := baton.ParseQuery(u.Query())
 	if err != nil {
 		return err
 	}
@@ -160,26 +136,26 @@ func cmdClient(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	return runBaton(ctx, session, false, cfg)
+	return baton.Run(ctx, session, false, cfg)
 }
 
 func cmdSelftest(args []string) error {
 	fs := flag.NewFlagSet("selftest", flag.ExitOnError)
-	baton := fs.Int("baton", 200, "initial baton (1–255)")
+	batonValue := fs.Int("baton", 200, "initial baton (1–255)")
 	count := fs.Int("count", 1, "number of parallel batons")
 	padding := fs.Int("padding", 0, "padding bytes in baton messages")
 	_ = fs.Parse(args)
 
-	if *baton < 1 || *baton > 255 {
+	if *batonValue < 1 || *batonValue > 255 {
 		return fmt.Errorf("baton must be 1–255")
 	}
 	if *count < 1 {
 		return fmt.Errorf("count must be >= 1")
 	}
 
-	cfg := batonConfig{
+	cfg := baton.Config{
 		Version: 0,
-		Baton:   byte(*baton),
+		Baton:   byte(*batonValue),
 		Count:   *count,
 		Padding: *padding,
 	}
@@ -192,10 +168,10 @@ func cmdSelftest(args []string) error {
 	wtServer := &wth2.Server{}
 	mux := http.NewServeMux()
 	serverErr := make(chan error, 1)
-	mux.HandleFunc(batonPath, func(w http.ResponseWriter, r *http.Request) {
-		qcfg, err := parseBatonQuery(r.URL.Query())
+	mux.HandleFunc(baton.Path, func(w http.ResponseWriter, r *http.Request) {
+		qcfg, err := baton.ParseQuery(r.URL.Query())
 		if err != nil {
-			rejectBadRequest(w, err.Error())
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		qcfg.Padding = cfg.Padding
@@ -205,7 +181,7 @@ func cmdSelftest(args []string) error {
 			return
 		}
 		defer session.Close()
-		serverErr <- runBaton(r.Context(), session, true, qcfg)
+		serverErr <- baton.Run(r.Context(), session, true, qcfg)
 	})
 
 	httpServer, err := newServer(cert, mux)
@@ -230,8 +206,8 @@ func cmdSelftest(args []string) error {
 	u := url.URL{
 		Scheme:   "https",
 		Host:     host,
-		Path:     batonPath,
-		RawQuery: cfg.query().Encode(),
+		Path:     baton.Path,
+		RawQuery: cfg.Query().Encode(),
 	}
 
 	log.Printf("selftest connect %s", u.String())
@@ -247,7 +223,7 @@ func cmdSelftest(args []string) error {
 
 	clientErr := make(chan error, 1)
 	go func() {
-		clientErr <- runBaton(ctx, session, false, cfg)
+		clientErr <- baton.Run(ctx, session, false, cfg)
 	}()
 
 	var cerr, serr error

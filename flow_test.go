@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -173,7 +174,7 @@ func TestCapsulesRaiseSendLimits(t *testing.T) {
 }
 
 func TestMaxStreamDataBeforeOpenIsKept(t *testing.T) {
-	peer := &peerInitialLimits{streamDataBidiRemote: 30}
+	peer := &peerInitialLimits{streamDataBidiRemote: 30, maxStreamsBidi: 1}
 	reader, writer := io.Pipe()
 	t.Cleanup(func() {
 		writer.Close()
@@ -267,6 +268,102 @@ func writeStreamDataCapsule(w quicvarint.Writer, id, max uint64) error {
 	payload := quicvarint.Append(nil, id)
 	payload = quicvarint.Append(payload, max)
 	return http3.WriteCapsule(w, http3.CapsuleType(CapsuleWTMaxStreamData), payload)
+}
+
+func TestSendStopsAtPeerLimits(t *testing.T) {
+	peer := &peerInitialLimits{
+		maxData:              5,
+		maxStreamsUni:        1,
+		maxStreamsBidi:       1,
+		streamDataUni:        100,
+		streamDataBidiRemote: 3,
+	}
+	reader, writer := io.Pipe()
+	t.Cleanup(func() {
+		writer.Close()
+		reader.Close()
+	})
+	var sent captureWriter
+	session := newSessionWithPeerLimits(reader, &sent, "test", false, peer)
+	t.Cleanup(session.Close)
+
+	stream, err := session.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.OpenStream(); !errors.Is(err, ErrSendLimit) {
+		t.Fatalf("second bidi open err = %v, want ErrSendLimit", err)
+	}
+	uni, err := session.OpenUnidirectionalStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.OpenUnidirectionalStream(); !errors.Is(err, ErrSendLimit) {
+		t.Fatalf("second uni open err = %v, want ErrSendLimit", err)
+	}
+
+	if _, err := stream.Write([]byte("abcd")); !errors.Is(err, ErrSendLimit) {
+		t.Fatalf("oversize write err = %v, want ErrSendLimit", err)
+	}
+	if n := sent.Len(); n != 0 {
+		t.Fatalf("rejected write sent %d bytes", n)
+	}
+
+	if n, err := stream.Write([]byte("abc")); err != nil || n != 3 {
+		t.Fatalf("write within stream limit = %d, %v", n, err)
+	}
+	// Stream limit is 3. One more byte on this stream is refused, and the
+	// refusal must leave the remaining session credit (2 bytes) intact.
+	if _, err := stream.Write([]byte("x")); !errors.Is(err, ErrSendLimit) {
+		t.Fatalf("write past stream limit err = %v, want ErrSendLimit", err)
+	}
+	if n, err := uni.Write([]byte("yz")); err != nil || n != 2 {
+		t.Fatalf("uni write = %d, %v", n, err)
+	}
+	if _, err := uni.Write([]byte("!")); !errors.Is(err, ErrSendLimit) {
+		t.Fatalf("write past session data err = %v, want ErrSendLimit", err)
+	}
+
+	if err := session.SendDatagram([]byte("dg")); err != nil {
+		t.Fatalf("datagram should not consume stream flow control: %v", err)
+	}
+
+	// Refused opens must not skip IDs. The uni stream is 6 only if the
+	// rejected bidi open left the counter at 4 (0 then 4|uni-bit).
+	if uni.ID != 6 {
+		t.Fatalf("uni id = %d, want 6", uni.ID)
+	}
+	if err := session.raiseMaxStreams(true, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.raiseMaxData(8); err != nil {
+		t.Fatal(err)
+	}
+	next, err := session.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.ID != 8 {
+		t.Fatalf("next bidi id = %d, want 8", next.ID)
+	}
+}
+
+type captureWriter struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (w *captureWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	w.n += len(p)
+	w.mu.Unlock()
+	return len(p), nil
+}
+
+func (w *captureWriter) Len() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.n
 }
 
 func streamSendLimit(t *testing.T, s *Session, id uint64) uint64 {

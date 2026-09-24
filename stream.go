@@ -67,12 +67,19 @@ func (s *SendStream) Write(p []byte) (n int, err error) {
 	if s.closed {
 		return 0, io.ErrClosedPipe
 	}
+	if err := s.session.reserveSendData(s.ID, len(p)); err != nil {
+		return 0, err
+	}
 
 	s.session.log.Printf("[stream %v] writing %d bytes", s.ID, len(p))
 
 	capsuleData := quicvarint.Append(nil, s.ID)
 	capsuleData = append(capsuleData, p...)
-	return len(p), s.session.writeCapsule(uint64(CapsuleWTStream), capsuleData)
+	if err := s.session.writeCapsule(uint64(CapsuleWTStream), capsuleData); err != nil {
+		s.session.refundSendData(s.ID, len(p))
+		return 0, err
+	}
+	return len(p), nil
 }
 
 // WritePadding sends a WebTransport PADDING capsule with an all-zero payload of length n.

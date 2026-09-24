@@ -419,8 +419,11 @@ func (s *Session) OpenStream() (*Stream, error) {
 	if s.stop.Load() {
 		return nil, ErrSessionClosed
 	}
-	stream := newStream(s, s.nextStreamID(true))
-	s.trackSendStream(stream.ID)
+	id, err := s.allocLocalStream(true)
+	if err != nil {
+		return nil, err
+	}
+	stream := newStream(s, id)
 	s.log.Printf("open stream bidi=true id=%d", stream.ID)
 	s.streams[stream.ID] = stream
 	return stream, nil
@@ -430,8 +433,11 @@ func (s *Session) OpenUnidirectionalStream() (*SendStream, error) {
 	if s.stop.Load() {
 		return nil, ErrSessionClosed
 	}
-	stream := newSendStream(s, s.nextStreamID(false))
-	s.trackSendStream(stream.ID)
+	id, err := s.allocLocalStream(false)
+	if err != nil {
+		return nil, err
+	}
+	stream := newSendStream(s, id)
 	s.log.Printf("open stream bidi=false id=%d", stream.ID)
 	s.sendStreams[stream.ID] = stream
 	return stream, nil

@@ -40,7 +40,16 @@ type sendLimits struct {
 	// New streams copy the matching initial value. A later capsule may
 	// raise an entry before the stream object exists.
 	streamMax map[uint64]uint64
+
+	dataSent   uint64
+	streamSent map[uint64]uint64
+	openedUni  uint64
+	openedBidi uint64
 }
+
+// ErrSendLimit is returned when opening a stream or writing stream data
+// would exceed the peer's current grant. The operation sends nothing.
+var ErrSendLimit = errors.New("peer send limit exhausted")
 
 func (s *Session) adoptPeerSendLimits(peer peerInitialLimits) {
 	s.limits.mu.Lock()
@@ -64,6 +73,41 @@ func (s *Session) trackSendStream(id uint64) {
 	}
 	s.limits.mu.Lock()
 	defer s.limits.mu.Unlock()
+	s.ensureStreamSendLimitLocked(id)
+}
+
+// allocLocalStream reserves a stream-count credit, when limits are active,
+// and allocates the next local stream ID. A refused open does not consume
+// an ID.
+func (s *Session) allocLocalStream(bidi bool) (uint64, error) {
+	s.limits.mu.Lock()
+	defer s.limits.mu.Unlock()
+	if s.limits.active {
+		opened := s.limits.openedUni
+		max := s.limits.maxStreamsUni
+		kind := "unidirectional streams"
+		if bidi {
+			opened = s.limits.openedBidi
+			max = s.limits.maxStreamsBidi
+			kind = "bidirectional streams"
+		}
+		if opened >= max {
+			return 0, fmt.Errorf("%w: %s", ErrSendLimit, kind)
+		}
+	}
+	id := s.nextStreamID(bidi)
+	if s.limits.active {
+		if bidi {
+			s.limits.openedBidi++
+		} else {
+			s.limits.openedUni++
+		}
+		s.ensureStreamSendLimitLocked(id)
+	}
+	return id, nil
+}
+
+func (s *Session) ensureStreamSendLimitLocked(id uint64) {
 	if !s.limits.active {
 		return
 	}
@@ -74,6 +118,58 @@ func (s *Session) trackSendStream(id uint64) {
 		return
 	}
 	s.limits.streamMax[id] = s.initialStreamSendLimitLocked(id)
+}
+
+// reserveSendData charges n payload bytes against the session and stream
+// grants. A write that does not fit is rejected whole; nothing is charged.
+func (s *Session) reserveSendData(id uint64, n int) error {
+	if n == 0 {
+		return nil
+	}
+	s.limits.mu.Lock()
+	defer s.limits.mu.Unlock()
+	if !s.limits.active {
+		return nil
+	}
+	add := uint64(n)
+	if s.limits.dataSent > s.limits.maxData || add > s.limits.maxData-s.limits.dataSent {
+		return fmt.Errorf("%w: session data", ErrSendLimit)
+	}
+	var maxStream uint64
+	if s.limits.streamMax != nil {
+		maxStream = s.limits.streamMax[id]
+	}
+	var sent uint64
+	if s.limits.streamSent != nil {
+		sent = s.limits.streamSent[id]
+	}
+	if sent > maxStream || add > maxStream-sent {
+		return fmt.Errorf("%w: stream data", ErrSendLimit)
+	}
+	s.limits.dataSent += add
+	if s.limits.streamSent == nil {
+		s.limits.streamSent = make(map[uint64]uint64)
+	}
+	s.limits.streamSent[id] = sent + add
+	return nil
+}
+
+func (s *Session) refundSendData(id uint64, n int) {
+	if n <= 0 {
+		return
+	}
+	s.limits.mu.Lock()
+	defer s.limits.mu.Unlock()
+	if !s.limits.active {
+		return
+	}
+	sub := uint64(n)
+	if s.limits.dataSent >= sub {
+		s.limits.dataSent -= sub
+	}
+	if s.limits.streamSent != nil && s.limits.streamSent[id] >= sub {
+		s.limits.streamSent[id] -= sub
+	}
 }
 
 // initialStreamSendLimitLocked is the SETTINGS value that applies to data

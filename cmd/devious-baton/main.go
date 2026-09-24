@@ -17,6 +17,7 @@ import (
 	"golang.org/x/net/http2"
 
 	wth2 "github.com/Acconut/webtransport-h2-go"
+	"github.com/Acconut/webtransport-h2-go/internal/tlsx"
 )
 
 func main() {
@@ -84,7 +85,7 @@ func cmdServe(args []string) error {
 			return err
 		}
 	case *selfsigned || (*certFile == "" && *keyFile == ""):
-		cert, _, err = generateSelfSignedCert()
+		cert, _, err = tlsx.GenerateSelfSignedCert()
 		if err != nil {
 			return err
 		}
@@ -235,7 +236,7 @@ func cmdSelftest(args []string) error {
 		Padding: *padding,
 	}
 
-	cert, roots, err := generateSelfSignedCert()
+	cert, roots, err := tlsx.GenerateSelfSignedCert()
 	if err != nil {
 		return err
 	}

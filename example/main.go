@@ -2,28 +2,20 @@ package main
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
-	"math/big"
-	"net"
 	"net/http"
-	"time"
 
 	"golang.org/x/net/http2"
 
 	wth2 "github.com/Acconut/webtransport-h2-go"
+	"github.com/Acconut/webtransport-h2-go/internal/tlsx"
 )
 
 func main() {
-	cert, clientRoots, err := generateSelfSignedCert()
+	cert, clientRoots, err := tlsx.GenerateSelfSignedCert()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -117,50 +109,4 @@ func main() {
 	reqBody.Close() // FIN CONNECT request body
 
 	server.Shutdown(context.Background())
-}
-
-// generateSelfSignedCert creates a self-signed certificate for localhost and returns
-// the TLS certificate for use in server config and an x509 CertPool containing that
-// certificate for use in client config (so the client trusts the server).
-func generateSelfSignedCert() (tls.Certificate, *x509.CertPool, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return tls.Certificate{}, nil, err
-	}
-
-	template := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "localhost"},
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().Add(24 * time.Hour),
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-		IPAddresses:           []net.IP{net.IPv4(127, 0, 0, 1)},
-		DNSNames:              []string{"localhost"},
-	}
-
-	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-	if err != nil {
-		return tls.Certificate{}, nil, err
-	}
-
-	var certPem, keyPem []byte
-	certPem = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyDer, _ := x509.MarshalECPrivateKey(key)
-	keyPem = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDer})
-
-	cert, err := tls.X509KeyPair(certPem, keyPem)
-	if err != nil {
-		return tls.Certificate{}, nil, err
-	}
-
-	x509Cert, err := x509.ParseCertificate(cert.Certificate[0])
-	if err != nil {
-		return tls.Certificate{}, nil, err
-	}
-	pool := x509.NewCertPool()
-	pool.AddCert(x509Cert)
-
-	return cert, pool, nil
 }

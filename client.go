@@ -34,7 +34,6 @@ func (c *Client) Connect(url string, availableProtocols []string, headers http.H
 	}
 	req.Header = headers.Clone()
 	req.Header.Set(":protocol", "webtransport")
-	req.Header.Set("WebTransport-Init", "bl=1048576; br=1048576; u=1048576")
 
 	if len(availableProtocols) > 0 {
 		encodedAvailableProtocols, err := encodeAvailableProtocolsHeader(availableProtocols)

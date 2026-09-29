@@ -1,6 +1,7 @@
 package wth2
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -59,8 +60,9 @@ type Session struct {
 	incomingUnidirectionalStreams chan *ReceiveStream
 	datagramBuffer                *datagramReceiveBuffer
 
-	closeErrMu sync.Mutex
-	closeErr   error
+	closeErrMu  sync.Mutex
+	closeErr    error
+	closeReason string // connect_fin when peer FINs; empty means local_close if no closeErr
 
 	// TODO: Lock
 	streams        map[uint64]*Stream        // Bidirectional streams.
@@ -75,6 +77,24 @@ type Session struct {
 
 const defaultReceiveBufferSize = 64 * 1024
 
+// sessionMeta carries connection/session identity for log prefixes.
+type sessionMeta struct {
+	peerAddr string // host:port of the peer; empty uses [server]/[client]
+	path     string
+}
+
+func logPrefix(isServer bool, meta sessionMeta) string {
+	peer := meta.peerAddr
+	if peer == "" {
+		if isServer {
+			peer = "server"
+		} else {
+			peer = "client"
+		}
+	}
+	return fmt.Sprintf("[%s] ", peer)
+}
+
 func newSession(reader io.Reader, writer io.Writer, protocol string, isServer bool) *Session {
 	return newSessionWithPeerLimits(reader, writer, protocol, isServer, nil)
 }
@@ -84,16 +104,16 @@ func newSession(reader io.Reader, writer io.Writer, protocol string, isServer bo
 // The limits are installed before the read loop starts, so a capsule cannot
 // race ahead of the SETTINGS snapshot.
 func newSessionWithPeerLimits(reader io.Reader, writer io.Writer, protocol string, isServer bool, peer *peerInitialLimits) *Session {
-	prefix := "[client] "
-	if isServer {
-		prefix = "[server] "
-	}
+	return newSessionConfigured(reader, writer, protocol, isServer, peer, sessionMeta{})
+}
+
+func newSessionConfigured(reader io.Reader, writer io.Writer, protocol string, isServer bool, peer *peerInitialLimits, meta sessionMeta) *Session {
 	session := &Session{
 		Protocol:                  protocol,
 		StreamReceiveBufferSize:   defaultReceiveBufferSize,
 		DatagramReceiveBufferSize: defaultReceiveBufferSize,
 		isServer:                  isServer,
-		log:                       log.New(log.Writer(), prefix, log.LstdFlags),
+		log:                       log.New(log.Writer(), logPrefix(isServer, meta), log.LstdFlags),
 		reader:                    quicvarint.NewReader(reader),
 		writer:                    quicvarint.NewWriter(writer),
 		flusher:                   flusherFromWriter(writer),
@@ -111,6 +131,8 @@ func newSessionWithPeerLimits(reader io.Reader, writer io.Writer, protocol strin
 		session.adoptPeerSendLimits(*peer)
 	}
 
+	session.log.Printf("connection upgraded path=%s protocol=%q", meta.path, protocol)
+	session.log.Printf("session start path=%s protocol=%q", meta.path, protocol)
 	go session.readLoop()
 
 	return session
@@ -137,6 +159,7 @@ func (s *Session) Close() {
 	s.closeOnce.Do(func() {
 		s.stop.Store(true)
 		s.closeDatagramDelivery()
+		s.logSessionEnd()
 		close(s.done)
 	})
 }
@@ -154,6 +177,7 @@ func (s *Session) CloseWithError(code uint32, message string) error {
 	payload := make([]byte, 4+len(message))
 	binary.BigEndian.PutUint32(payload[:4], code)
 	copy(payload[4:], message)
+	s.log.Printf("sent WT_CLOSE_SESSION code=0x%x msg=%q", code, message)
 	if err := s.writeCapsule(uint64(CapsuleWTCloseSession), payload); err != nil {
 		return err
 	}
@@ -171,6 +195,34 @@ func (s *Session) setCloseErr(err error) {
 	}
 }
 
+func (s *Session) setCloseReason(reason string) {
+	s.closeErrMu.Lock()
+	defer s.closeErrMu.Unlock()
+	if s.closeReason == "" {
+		s.closeReason = reason
+	}
+}
+
+func (s *Session) logSessionEnd() {
+	s.closeErrMu.Lock()
+	err := s.closeErr
+	reason := s.closeReason
+	s.closeErrMu.Unlock()
+
+	if err != nil {
+		if sce, ok := err.(*SessionCloseError); ok {
+			s.log.Printf("session end reason=wt_close_session remote=%v code=0x%x msg=%q", sce.Remote, sce.Code, sce.Message)
+			return
+		}
+		s.log.Printf("session end reason=error err=%q", err)
+		return
+	}
+	if reason == "" {
+		reason = "local_close"
+	}
+	s.log.Printf("session end reason=%s", reason)
+}
+
 func (s *Session) readLoop() {
 	defer s.Close()
 
@@ -182,11 +234,13 @@ func (s *Session) readLoop() {
 		typ, content, err := http3.ParseCapsule(s.reader)
 		if err != nil {
 			if isCleanConnectTeardown(err) {
+				s.setCloseReason("connect_fin")
 				return
 			}
 			if !s.stop.Load() {
 				s.log.Printf("read error: %v", err)
 			}
+			s.setCloseReason("error")
 			return
 		}
 		switch CapsuleType(typ) {
@@ -197,16 +251,12 @@ func (s *Session) readLoop() {
 				if !isCleanConnectTeardown(err) && !s.stop.Load() {
 					s.log.Printf("read error: %v", err)
 				}
+				if isCleanConnectTeardown(err) {
+					s.setCloseReason("connect_fin")
+				}
 				return
 			}
-			s.log.Printf("received capsule %s len=%d", CapsuleType(typ), len(padding))
-			for _, b := range padding {
-				// RFC allows receivers to ignore validation; we only log non-zero bytes.
-				if b != 0 {
-					s.log.Printf("received non-zero PADDING byte")
-					break
-				}
-			}
+			s.log.Printf("recv PADDING len=%d", len(padding))
 		case CapsuleWTStream, CapsuleWTStreamFin:
 			id, err := quicvarint.Read(quicvarint.NewReader(content))
 			if err != nil {
@@ -214,11 +264,21 @@ func (s *Session) readLoop() {
 				s.log.Printf("read error: %v", err)
 				return
 			}
-			s.log.Printf("received capsule %s stream_id=%d bidi=%v ours=%v", CapsuleType(typ), id, isBidirectionalStream(id), s.isOurStream(id))
+			payload, err := io.ReadAll(content)
+			if err != nil {
+				if !isCleanConnectTeardown(err) && !s.stop.Load() {
+					s.log.Printf("read error: %v", err)
+				}
+				if isCleanConnectTeardown(err) {
+					s.setCloseReason("connect_fin")
+				}
+				return
+			}
+			s.log.Printf("recv %s stream_id=%d len=%d", CapsuleType(typ), id, len(payload))
+			payloadReader := bytes.NewReader(payload)
 			if isBidirectionalStream(id) {
 				if stream, ok := s.streams[id]; ok {
-					// Provide data to stream
-					err = stream.receiveStreamData(content)
+					err = stream.receiveStreamData(payloadReader)
 					if err != nil {
 						s.log.Printf("read error: %v", err)
 						return
@@ -234,7 +294,7 @@ func (s *Session) readLoop() {
 					if !s.enqueueIncomingStream(stream) {
 						return
 					}
-					err = stream.receiveStreamData(content)
+					err = stream.receiveStreamData(payloadReader)
 					if err != nil {
 						s.log.Printf("read error: %v", err)
 						return
@@ -244,13 +304,12 @@ func (s *Session) readLoop() {
 					}
 				} else {
 					// Peer initiated stream with our ID -> reject
-					s.log.Printf("dropping peer-initiated stream with our ID: %d", id)
-					io.Copy(io.Discard, s.reader)
+					io.Copy(io.Discard, payloadReader)
 				}
 			} else {
 				// Unidirectional stream
 				if stream, ok := s.receiveStreams[id]; ok {
-					err = stream.receiveStreamData(content)
+					err = stream.receiveStreamData(payloadReader)
 					if err != nil {
 						s.log.Printf("read error: %v", err)
 						return
@@ -266,7 +325,7 @@ func (s *Session) readLoop() {
 					if !s.enqueueIncomingUniStream(stream) {
 						return
 					}
-					err = stream.receiveStreamData(content)
+					err = stream.receiveStreamData(payloadReader)
 					if err != nil {
 						s.log.Printf("read error: %v", err)
 						return
@@ -277,8 +336,7 @@ func (s *Session) readLoop() {
 					}
 				} else {
 					// Peer sent data on our local send-only stream ID -> reject
-					s.log.Printf("dropping peer data for local send-only stream: %d", id)
-					_, _ = io.Copy(io.Discard, content)
+					_, _ = io.Copy(io.Discard, payloadReader)
 				}
 			}
 		case CapsuleDatagram:
@@ -287,9 +345,12 @@ func (s *Session) readLoop() {
 				if !isCleanConnectTeardown(err) && !s.stop.Load() {
 					s.log.Printf("read error: %v", err)
 				}
+				if isCleanConnectTeardown(err) {
+					s.setCloseReason("connect_fin")
+				}
 				return
 			}
-			s.log.Printf("received capsule %s len=%d", CapsuleType(typ), len(payload))
+			s.log.Printf("recv datagram len=%d", len(payload))
 			s.deliverDatagram(payload)
 		case CapsuleWTCloseSession:
 			payload, err := io.ReadAll(content)
@@ -297,19 +358,23 @@ func (s *Session) readLoop() {
 				if !isCleanConnectTeardown(err) && !s.stop.Load() {
 					s.log.Printf("read error: %v", err)
 				}
+				if isCleanConnectTeardown(err) {
+					s.setCloseReason("connect_fin")
+				}
 				return
 			}
 			code, message, err := parseWTCloseSession(payload)
 			if err != nil {
 				s.log.Printf("invalid WT_CLOSE_SESSION: %v", err)
+				s.setCloseReason("error")
 				return
 			}
-			s.log.Printf("received capsule %s code=0x%x msg=%q", CapsuleType(typ), code, message)
+			s.log.Printf("recv WT_CLOSE_SESSION code=0x%x msg=%q", code, message)
 			s.setCloseErr(&SessionCloseError{Code: code, Message: message, Remote: true})
 			return
 		case CapsuleWTDrainSession:
 			_, _ = io.Copy(io.Discard, content)
-			s.log.Printf("received capsule %s", CapsuleType(typ))
+			s.log.Printf("recv WT_DRAIN_SESSION")
 			// Drain is advisory; keep the session open until Close / peer FIN.
 		case CapsuleWTMaxData, CapsuleWTMaxStreamData, CapsuleWTMaxStreamsBidi, CapsuleWTMaxStreamsUni:
 			err := s.handleSendLimitCapsule(CapsuleType(typ), content)
@@ -317,17 +382,28 @@ func (s *Session) readLoop() {
 				break
 			}
 			if fc := flowControlError(err); fc != nil {
-				s.log.Printf("flow control error: %v", fc)
 				s.setCloseErr(fc)
 				return
 			}
 			if !isCleanConnectTeardown(err) && !s.stop.Load() {
 				s.log.Printf("read error: %v", err)
 			}
+			if isCleanConnectTeardown(err) {
+				s.setCloseReason("connect_fin")
+			}
 			return
 		default:
-			s.log.Printf("received capsule %s", CapsuleType(typ))
-			_, _ = io.Copy(io.Discard, content)
+			payload, err := io.ReadAll(content)
+			if err != nil {
+				if !isCleanConnectTeardown(err) && !s.stop.Load() {
+					s.log.Printf("read error: %v", err)
+				}
+				if isCleanConnectTeardown(err) {
+					s.setCloseReason("connect_fin")
+				}
+				return
+			}
+			s.log.Printf("recv %s len=%d", CapsuleType(typ), len(payload))
 		}
 	}
 }
@@ -379,7 +455,7 @@ func (s *Session) enqueueIncomingUniStream(stream *ReceiveStream) bool {
 
 func (s *Session) deliverDatagram(payload []byte) {
 	if !s.datagramBuffer.write(payload) {
-		s.log.Printf("dropping datagram: receive buffer full")
+		s.log.Printf("drop datagram reason=recv_buffer_full len=%d", len(payload))
 	}
 }
 
@@ -424,7 +500,6 @@ func (s *Session) OpenStream() (*Stream, error) {
 		return nil, err
 	}
 	stream := newStream(s, id)
-	s.log.Printf("open stream bidi=true id=%d", stream.ID)
 	s.streams[stream.ID] = stream
 	return stream, nil
 }
@@ -438,7 +513,6 @@ func (s *Session) OpenUnidirectionalStream() (*SendStream, error) {
 		return nil, err
 	}
 	stream := newSendStream(s, id)
-	s.log.Printf("open stream bidi=false id=%d", stream.ID)
 	s.sendStreams[stream.ID] = stream
 	return stream, nil
 }
@@ -446,7 +520,6 @@ func (s *Session) OpenUnidirectionalStream() (*SendStream, error) {
 func (s *Session) AcceptStream(ctx context.Context) (*Stream, error) {
 	select {
 	case stream := <-s.incomingStreams:
-		s.log.Printf("accepted stream id=%d", stream.ID)
 		return stream, nil
 	case <-s.done:
 		return nil, ErrSessionClosed
@@ -469,7 +542,6 @@ func (s *Session) AcceptUnidirectionalStream(ctx context.Context) (*ReceiveStrea
 func (s *Session) writeCapsule(typ uint64, data []byte) (err error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	s.log.Printf("sent capsule %s len=%d", CapsuleType(typ), len(data))
 	return http3.WriteCapsule(s.writer, http3.CapsuleType(typ), data)
 }
 
@@ -502,6 +574,7 @@ func (s *Session) SendDatagram(payload []byte) error {
 	if s.stop.Load() {
 		return ErrSessionClosed
 	}
+	s.log.Printf("sent datagram len=%d", len(payload))
 	return s.writeCapsule(uint64(CapsuleDatagram), payload)
 }
 

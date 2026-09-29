@@ -52,7 +52,6 @@ func (c *Client) Connect(url string, availableProtocols []string, headers http.H
 		return nil, nil, fmt.Errorf("webtransport connection failed: %w", err)
 	}
 	// Must not close res.Body here; the session reads capsules from it.
-	fmt.Println("Received response")
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		_ = pw.Close()
@@ -72,7 +71,11 @@ func (c *Client) Connect(url string, availableProtocols []string, headers http.H
 		copied := peerLimitsFromSettings(settings)
 		peer = &copied
 	}
-	return newSessionWithPeerLimits(res.Body, pw, protocol, false, peer), pw, nil
+	meta := sessionMeta{
+		peerAddr: req.URL.Host,
+		path:     req.URL.RequestURI(),
+	}
+	return newSessionConfigured(res.Body, pw, protocol, false, peer, meta), pw, nil
 }
 
 func peerLimitsFromSettings(s http2.WebTransportSettings) peerInitialLimits {

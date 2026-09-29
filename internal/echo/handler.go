@@ -1,7 +1,6 @@
 package echo
 
 import (
-	"log"
 	"net/http"
 	"slices"
 
@@ -25,7 +24,6 @@ func Handler() http.Handler {
 			return
 		}
 		defer session.Close()
-		log.Printf("echo session protocol=%q", session.Protocol)
 		runEchoServer(r.Context(), session)
 	})
 }

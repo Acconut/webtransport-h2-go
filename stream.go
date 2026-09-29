@@ -71,10 +71,9 @@ func (s *SendStream) Write(p []byte) (n int, err error) {
 		return 0, err
 	}
 
-	s.session.log.Printf("[stream %v] writing %d bytes", s.ID, len(p))
-
 	capsuleData := quicvarint.Append(nil, s.ID)
 	capsuleData = append(capsuleData, p...)
+	s.session.log.Printf("sent WT_STREAM stream_id=%d len=%d", s.ID, len(p))
 	if err := s.session.writeCapsule(uint64(CapsuleWTStream), capsuleData); err != nil {
 		s.session.refundSendData(s.ID, len(p))
 		return 0, err
@@ -91,7 +90,7 @@ func (s *SendStream) WritePadding(n int) error {
 		return errors.New("padding length must be non-negative")
 	}
 	padding := make([]byte, n)
-	s.session.log.Printf("[stream %v] writing padding len=%d", s.ID, n)
+	s.session.log.Printf("sent PADDING len=%d", n)
 	return s.session.writeCapsule(uint64(CapsulePadding), padding)
 }
 
@@ -102,18 +101,15 @@ func (s *ReceiveStream) receiveStreamData(data io.Reader) (err error) {
 		return nil
 	}
 
-	s.session.log.Printf("[stream %v] receiving data..", s.ID)
 	payload, err := io.ReadAll(data)
 	if err != nil {
 		return err
 	}
-	s.session.log.Printf("[stream %v] received data len=%d", s.ID, len(payload))
 	_, err = s.recvBuffer.write(payload)
 	return err
 }
 
 func (s *ReceiveStream) Read(p []byte) (n int, err error) {
-	s.session.log.Printf("[stream %v] waiting for next read..", s.ID)
 	return s.recvBuffer.read(p)
 }
 
@@ -137,8 +133,8 @@ func (s *SendStream) Close() error {
 	}
 	s.closed = true
 
-	s.session.log.Printf("[stream %v] closing stream", s.ID)
 	capsuleData := quicvarint.Append(nil, s.ID)
+	s.session.log.Printf("sent WT_STREAM_FIN stream_id=%d len=0", s.ID)
 	return s.session.writeCapsule(uint64(CapsuleWTStreamFin), capsuleData)
 }
 

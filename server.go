@@ -50,10 +50,11 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, erro
 	}
 
 	rc := http.NewResponseController(w)
-	fmt.Println(rc.EnableFullDuplex())
+	if err := rc.EnableFullDuplex(); err != nil {
+		return nil, err
+	}
 
 	w.WriteHeader(http.StatusOK)
-	fmt.Println("Sent header")
 
 	// Very important to flush headers before handing the stream to the application.
 	rc.Flush()
@@ -63,7 +64,11 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, erro
 		copied := peerLimitsFromSettings(settings)
 		peer = &copied
 	}
-	return newSessionWithPeerLimits(r.Body, w, protocol, true, peer), nil
+	meta := sessionMeta{
+		peerAddr: r.RemoteAddr,
+		path:     r.URL.RequestURI(),
+	}
+	return newSessionConfigured(r.Body, w, protocol, true, peer, meta), nil
 }
 
 func parseAvailableProtocolsHeader(h []string) ([]string, error) {

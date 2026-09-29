@@ -207,21 +207,21 @@ func (s *Session) handleSendLimitCapsule(typ CapsuleType, content io.Reader) err
 		if err != nil {
 			return err
 		}
-		s.log.Printf("received capsule %s max=%d", typ, max[0])
+		s.log.Printf("recv %s max=%d", typ, max[0])
 		return s.raiseMaxData(max[0])
 	case CapsuleWTMaxStreamData:
 		fields, err := readCapsuleVarints(content, 2)
 		if err != nil {
 			return err
 		}
-		s.log.Printf("received capsule %s stream_id=%d max=%d", typ, fields[0], fields[1])
+		s.log.Printf("recv %s stream_id=%d max=%d", typ, fields[0], fields[1])
 		return s.raiseMaxStreamData(fields[0], fields[1])
 	case CapsuleWTMaxStreamsBidi, CapsuleWTMaxStreamsUni:
 		max, err := readCapsuleVarints(content, 1)
 		if err != nil {
 			return err
 		}
-		s.log.Printf("received capsule %s max=%d", typ, max[0])
+		s.log.Printf("recv %s max=%d", typ, max[0])
 		return s.raiseMaxStreams(typ == CapsuleWTMaxStreamsBidi, max[0])
 	default:
 		_, _ = io.Copy(io.Discard, content)

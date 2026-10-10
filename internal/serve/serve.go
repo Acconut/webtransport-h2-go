@@ -4,6 +4,7 @@ package serve
 import (
 	"context"
 	"crypto/tls"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -36,6 +37,14 @@ func UntilSignal(addr string, server *http.Server, onListen func(net.Addr)) erro
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
+
+		// Close the key log file if set.
+		if server.TLSConfig.KeyLogWriter != nil {
+			if f, ok := server.TLSConfig.KeyLogWriter.(io.Closer); ok {
+				f.Close()
+			}
+		}
+
 		return nil
 	case err := <-errCh:
 		if err == http.ErrServerClosed {

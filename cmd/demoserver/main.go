@@ -15,6 +15,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 
 	"golang.org/x/net/http2"
 
@@ -65,12 +66,23 @@ func handleRelease(w http.ResponseWriter, r *http.Request) {
 }
 
 func newServer(cert tls.Certificate, handler http.Handler) (*http.Server, error) {
+	tlsCfg := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		NextProtos:   []string{"h2"},
+	}
+
+	if path := os.Getenv("SSLKEYLOGFILE"); path != "" {
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+		if err != nil {
+			return nil, fmt.Errorf("SSLKEYLOGFILE: %w", err)
+		}
+
+		// Keep the file open for the process lifetime so KeyLogWriter stays valid.
+		tlsCfg.KeyLogWriter = f
+	}
 	server := &http.Server{
-		Handler: handler,
-		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			NextProtos:   []string{"h2"},
-		},
+		Handler:   handler,
+		TLSConfig: tlsCfg,
 	}
 	if err := http2.ConfigureServer(server, &http2.Server{
 		WebTransport: http2.DefaultWebTransportSettings(),

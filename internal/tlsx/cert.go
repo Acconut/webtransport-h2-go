@@ -16,13 +16,30 @@ import (
 	"time"
 )
 
-// GenerateSelfSignedCert creates an ephemeral certificate for localhost.
+// GenerateSelfSignedCert creates an ephemeral certificate for localhost and
+// any currently configured non-loopback interface addresses (handy for LAN
+// interop from another machine).
 // The certificate is for the server config. The pool trusts that certificate
 // so a client can dial the server without InsecureSkipVerify.
 func GenerateSelfSignedCert() (tls.Certificate, *x509.CertPool, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return tls.Certificate{}, nil, err
+	}
+
+	ips := []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback}
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, a := range addrs {
+			ipnet, ok := a.(*net.IPNet)
+			if !ok || ipnet.IP.IsLoopback() {
+				continue
+			}
+			if ip4 := ipnet.IP.To4(); ip4 != nil {
+				ips = append(ips, ip4)
+			} else if ip6 := ipnet.IP.To16(); ip6 != nil {
+				ips = append(ips, ip6)
+			}
+		}
 	}
 
 	template := &x509.Certificate{
@@ -33,7 +50,7 @@ func GenerateSelfSignedCert() (tls.Certificate, *x509.CertPool, error) {
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
-		IPAddresses:           []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
+		IPAddresses:           ips,
 		DNSNames:              []string{"localhost"},
 	}
 
